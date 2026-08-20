@@ -1,0 +1,264 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * A dark console, on purpose.
+ *
+ * This tool is used for minutes at a time, usually with the shop app open in another window — a
+ * distinctly darker, cooler surface makes it obvious at a glance which one you are typing customer
+ * changes into. The shop app is light; this deliberately is not.
+ */
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    @apply h-full;
+  }
+
+  body {
+    @apply bg-slate-950 text-slate-100 antialiased;
+    font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    /* The background lives on the pseudo-elements below, so it can move without repainting
+       anything above it. */
+    position: relative;
+    overflow-x: hidden;
+  }
+
+  /*
+   * ── The moving part ────────────────────────────────────────────────────────
+   *
+   * Three large, heavily blurred colour fields drifting slowly across one another.
+   *
+   * Painted on a **fixed** pseudo-element rather than as a body background, so scrolling never
+   * re-rasterises the blur — on a long account list that is the difference between smooth and
+   * gritty. And the animation moves `transform` only, which stays on the GPU; animating the
+   * gradient's own positions would repaint every frame, which is exactly what makes this kind of
+   * effect feel broken on a laptop.
+   */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: -20%;
+    z-index: -2;
+    pointer-events: none;
+    background:
+      radial-gradient(38rem 38rem at 12% 8%, rgba(56, 189, 248, 0.22), transparent 60%),
+      radial-gradient(34rem 34rem at 88% 12%, rgba(139, 92, 246, 0.2), transparent 62%),
+      radial-gradient(40rem 40rem at 62% 92%, rgba(16, 185, 129, 0.14), transparent 65%);
+    filter: blur(28px) saturate(120%);
+    animation: drift 34s ease-in-out infinite alternate;
+    will-change: transform;
+  }
+
+  /*
+   * A fine grid, fading out downwards.
+   *
+   * Two one-pixel gradients rather than an image: no request, no asset, and it stays crisp at any
+   * zoom. Masked so it reads as texture near the top and is gone by the time the table starts,
+   * where a grid would fight the rows.
+   */
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background-image:
+      linear-gradient(to right, rgba(148, 163, 184, 0.07) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(148, 163, 184, 0.07) 1px, transparent 1px);
+    background-size: 3rem 3rem;
+    -webkit-mask-image: linear-gradient(to bottom, black, transparent 65%);
+    mask-image: linear-gradient(to bottom, black, transparent 65%);
+  }
+
+  @keyframes drift {
+    0% {
+      transform: translate3d(-3%, -2%, 0) scale(1.05);
+    }
+    50% {
+      transform: translate3d(3%, 2%, 0) scale(1.12);
+    }
+    100% {
+      transform: translate3d(-2%, 3%, 0) scale(1.06);
+    }
+  }
+
+  /*
+   * Somebody whose system asks for less motion means it. The colour stays — that is the design, not
+   * the movement — and only the drift stops.
+   */
+  @media (prefers-reduced-motion: reduce) {
+    body::before {
+      animation: none;
+    }
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+
+  /* Tabular figures wherever a number is compared down a column. */
+  .num {
+    font-variant-numeric: tabular-nums;
+  }
+
+  ::selection {
+    background: rgba(56, 189, 248, 0.3);
+  }
+
+  /* A scrollbar belonging to this surface rather than to the OS. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(51 65 85) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: rgb(51 65 85);
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: rgb(71 85 105);
+    background-clip: content-box;
+  }
+}
+
+@layer components {
+  /*
+   * Cards are translucent so the drifting colour shows through them.
+   *
+   * That is the whole reason the background earns its place — an opaque panel laid over it would
+   * hide it, and the effect would only ever be visible in the margins.
+   */
+  .card {
+    @apply rounded-2xl border border-white/[0.07] bg-slate-900/60 shadow-xl shadow-slate-950/40 backdrop-blur-xl;
+  }
+
+  .field {
+    @apply w-full rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2 text-[14px] text-slate-100
+      backdrop-blur-sm transition-colors placeholder:text-slate-500
+      focus:border-sky-400/60 focus:bg-slate-950/70 focus:outline-none focus:ring-2 focus:ring-sky-500/25;
+  }
+
+  .label {
+    @apply mb-1 block text-[12.5px] font-semibold text-slate-300;
+  }
+
+  /*
+   * A sticky header. The table scrolls inside its card on a long list, and a header that scrolls
+   * away means counting columns to work out which one holds the expiry date.
+   */
+  .th {
+    @apply sticky top-0 z-10 border-b border-white/10 bg-slate-900/85 px-3 py-2 text-left text-[11.5px]
+      font-bold uppercase tracking-wider text-slate-400 backdrop-blur-xl;
+  }
+
+  .td {
+    @apply border-b border-white/[0.06] px-3 py-2.5 text-[13.5px] text-slate-200;
+  }
+
+  /* The brand rule, for the top of the login card. */
+  .accent-rule {
+    @apply h-[3px] w-full rounded-full;
+    background-image: linear-gradient(90deg, #38bdf8, #8b5cf6 55%, #10b981);
+  }
+}
+
+/*
+ * Printing.
+ *
+ * The revenue report is the one thing here that leaves the building, and the browser's own print
+ * dialog is what turns it into a PDF — a better one than a bundled library would draw, with real
+ * fonts and real page breaks, for no bundle weight at all.
+ *
+ * So printing has one job: get everything that is not the document out of the way. The modal stops
+ * being a modal, the console behind it stops existing, and the page turns white — a dark-themed
+ * console sent to a printer is a solid black page and an empty toner cartridge.
+ */
+@media print {
+  /* Backgrounds print as themselves rather than being helpfully dropped. */
+  * {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  html,
+  body {
+    background: #fff !important;
+    color: #0f172a !important;
+  }
+
+  /* The console, the shader canvas, the buttons, the warnings — none of it is the document. */
+  body > div > *:not(.print-root),
+  canvas,
+  .no-print {
+    display: none !important;
+  }
+
+  /*
+   * The dialog holding the report unwraps: no overlay, no rounded panel, no scroll container, no
+   * height cap. A fixed, max-height element prints as one clipped page and loses everything below.
+   */
+  .print-root,
+  .print-root * {
+    position: static !important;
+    overflow: visible !important;
+    max-height: none !important;
+    box-shadow: none !important;
+  }
+
+  .print-root {
+    display: block !important;
+    background: transparent !important;
+  }
+
+  /*
+   * The dialog holding the document stops looking like a dialog: no dark panel, no border, no
+   * rounding, none of its own padding. Left alone it prints a black frame around the page — and
+   * because the panel is what the table's width is measured against, it pushes the right-hand
+   * column off the edge of the paper.
+   */
+  .print-root > div:last-child {
+    background: transparent !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    width: 100% !important;
+    max-width: none !important;
+  }
+
+  .print-root > div:last-child > div {
+    padding: 0 !important;
+  }
+
+  /* The document keeps its own padding: that is the white margin the figures sit inside. */
+  .printable {
+    border-radius: 0 !important;
+  }
+
+  /* A row split across a page break is a row that gets misread. */
+  tr,
+  thead {
+    break-inside: avoid;
+  }
+
+  thead {
+    display: table-header-group;
+  }
+
+  @page {
+    margin: 14mm;
+  }
+}

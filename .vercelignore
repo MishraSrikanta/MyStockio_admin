@@ -1,0 +1,22 @@
+# What a deployment does not need.
+#
+# The build compiles `src` into `dist`. Nothing below is imported by `src`, so none of it can
+# affect the bundle — but excluding it keeps the upload small and removes any possibility of a
+# test or a dev server being run near a deployment.
+
+# Test suites and their build output.
+scripts/
+.test-build/
+
+# The reference API server. It exists so this console can be exercised before the real backend
+# has the admin routes; it is emphatically not for production.
+server-reference/
+
+# Local build artefacts.
+dist/
+
+# Editor and OS noise.
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

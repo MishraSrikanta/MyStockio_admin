@@ -1,0 +1,33 @@
+{
+  "name": "mystockio-admin",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Admin console for MyStockio — accounts, subscriptions, payments and renewal reminders.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "api": "node server-reference/admin-server.mjs",
+    "test": "node server-reference/contract.test.mjs && npm run test:lib",
+    "test:lib": "node scripts/run-tests.mjs"
+  },
+  "dependencies": {
+    "lucide-react": "^0.451.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^4.7.0",
+    "autoprefixer": "^10.5.4",
+    "esbuild": "^0.23.1",
+    "postcss": "^8.5.26",
+    "tailwindcss": "^3.4.19",
+    "typescript": "^5.9.3",
+    "vite": "^5.4.21"
+  },
+  "engines": { "node": ">=18" }
+}
