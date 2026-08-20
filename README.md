@@ -169,10 +169,10 @@ business in a search index.
 `src/lib/config.ts`, two constants, the same arrangement as MyStockio:
 
 ```ts
-// const PROD_BASE = "https://financegpt-backend-phm6.onrender.com/";
-// const DEV_BASE = "https://financegpt-backend-phm6.onrender.com/";
-const PROD_BASE = "http://localhost:5000/"; // a production build
-const DEV_BASE = "http://localhost:5000/"; // vite dev
+const PROD_BASE = "https://financegpt-backend-phm6.onrender.com/";
+const DEV_BASE = "https://financegpt-backend-phm6.onrender.com/";
+// const PROD_BASE = "http://localhost:5000/"; // a production build
+// const DEV_BASE = "http://localhost:5000/"; // vite dev
 ```
 
 `vite dev` uses `DEV_BASE` and a build uses `PROD_BASE`. Override either without touching the source
