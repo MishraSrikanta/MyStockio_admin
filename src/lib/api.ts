@@ -237,6 +237,19 @@ export interface CreateAccountInput {
   plan?: string
   /** The invite gate MyStockio's own signup form sends. */
   developerCode?: string
+  /**
+   * What they do in the shop — a `Role` value. Absent means owner, so a caller that predates roles
+   * keeps creating owners exactly as before.
+   */
+  shopRole?: string
+  /**
+   * The owner this login belongs to, **required for every role except owner**.
+   *
+   * An email rather than an id, because it is what a person knows and can check. The server resolves
+   * it to an `ownerId` and is the authority on whether it exists and is really an owner — resolving
+   * it here and posting an id would let a stale list attach somebody to the wrong shop.
+   */
+  ownerEmail?: string
 }
 
 /**
@@ -258,8 +271,15 @@ export async function createAccount(input: CreateAccountInput): Promise<AdminAcc
       password: input.password,
       ...(input.phone?.trim() ? { phone: input.phone.trim() } : {}),
       ...(input.shopName?.trim() ? { shopName: input.shopName.trim() } : {}),
-      plan: input.plan || '1year',
+      /*
+       * `plan` is sent for an owner only. Staff ride on their owner's licence, so posting a plan
+       * with one would ask the server to issue a second subscription for a login that must never
+       * have one of its own — and the money screen would then count a cashier as a paying customer.
+       */
+      ...(input.shopRole && input.shopRole !== 'owner' ? {} : { plan: input.plan || '1year' }),
       ...(input.developerCode ? { developerCode: input.developerCode } : {}),
+      ...(input.shopRole ? { shopRole: input.shopRole } : {}),
+      ...(input.ownerEmail?.trim() ? { ownerEmail: input.ownerEmail.trim().toLowerCase() } : {}),
     },
     /*
      * Without the admin key. Registration is a public route that needs no privilege, and sending
@@ -278,6 +298,14 @@ export interface UpdateAccountInput {
   /** Sent only when it is being changed. The server hashes it. */
   password?: string
   plan?: string
+  /**
+   * Change what somebody does. The server refuses the two changes that would break the shape:
+   * promoting a staff member to owner while they still point at one, and demoting an owner who still
+   * has staff of their own.
+   */
+  shopRole?: string
+  /** Move a staff member to a different owner. */
+  ownerEmail?: string
 }
 
 /** Amends one account. Only the fields present are changed. */

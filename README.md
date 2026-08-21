@@ -74,7 +74,8 @@ reusing it would hand back exactly the exposure this change removed.
 - **Counters** — all / to chase / expired / expiring / active / lifetime, each one a filter. Also
   how many of the chase list have **no usable phone number**, so the gap is visible instead of the
   count quietly overstating what can be done.
-- **Create** — a new customer with a plan. The server sets the dates; an expiry cannot be typed.
+- **Create** — an owner with a plan, or a staff login (cashier, product manager, …) under an owner.
+  The server sets the dates; an expiry cannot be typed.
 - **Amend** — shop name, owner, user id (email), phone, password. A changed password works at once.
 - **Payments** — amount, plan, method and reference in one action that also renews the licence, plus
   a WhatsApp receipt.
@@ -82,6 +83,56 @@ reusing it would hand back exactly the exposure this change removed.
   filled in. Free: your own WhatsApp sends it, no Business API and no per-message charge.
 - **Delete** — permanent, and it asks for the shop name to be typed rather than an "are you sure",
   because a confirm dialog gets dismissed by reflex.
+
+### Roles, owners and staff
+
+**`Role` in `src/lib/roles.ts`** — `owner`, `manager`, `cashier`, `product_manager`, `accountant`.
+
+Creating a login asks for the role **first**, because it decides what the rest of the form asks:
+
+| Chosen | The form shows | The form hides |
+| --- | --- | --- |
+| **Owner** | a subscription plan | the owner field — they have nobody above them |
+| anything else | the owner's email, required | the plan — staff ride on the owner's licence |
+
+**Picking the owner fills in the shop name.** A staff login works in that shop, so it takes the
+owner's shop name along with their plan and expiry — the three things it does not own. The field
+stays editable for the branch case, and a name typed by hand is never overwritten afterwards; left
+blank, the server uses the owner's.
+
+The owner is picked from the accounts already loaded, or typed if they are not in the list. Either
+way the **email** is what gets sent: the server resolves it and is the authority on whether it exists
+and is really an owner, so a stale list cannot attach somebody to the wrong shop.
+
+In the table, an owner's row carries `3 staff` and an expander. Their people sit underneath it,
+collapsed by default, with their roles and whose licence they are on. `+ add staff` on the row opens
+the create form already pointed at that owner. Searching or the **Staff logins** filter lifts staff
+to the top level, because a row nobody can reach is worse than a row in the wrong place.
+
+**Two levels, exactly.** Staff cannot have staff — an owner-email pointing at a cashier is refused
+here *and* by the server, which is the check that counts.
+
+#### What this deliberately does not do
+
+- **Staff hold no licence.** They read their owner's, resolved live (`subscriptionFrom` says whose).
+  Copying it at creation would drift the moment the owner renews, and the drift is invisible: a
+  cashier locked out in April while the shop is paid up to next March.
+- **Staff are counted apart from every figure on the screen.** An owner with three staff is *one*
+  customer, one licence, one row to chase. Folding them in would read as four.
+- **Payments belong to the owner.** The server answers `400` for a payment against staff, so the
+  drawer does not offer the form.
+- **No permission enforcement.** `ROLE_NOTE` describes what each role is *for*; nothing here decides
+  what a cashier may do. That belongs in the shop app — a permission matrix in this console would
+  read as an authorisation model while enforcing nothing.
+
+#### `role` is not `shopRole`, on purpose
+
+`role` is **platform privilege** (`admin` / `superadmin`) and is what the server authorises against.
+`shopRole` is a **job**. They are separate fields because `api/v1/auth/register` is public: if a job
+title were read out of the field the authoriser trusts, `{"role":"superadmin"}` in a signup body
+would be a request to become an administrator. The contract test asserts that a signup naming `role`
+does not get it, that the account is then refused by `admin/login` with 403, and that
+`shopRole: "superadmin"` is a 400.
 
 ### The money screen
 
@@ -169,10 +220,10 @@ business in a search index.
 `src/lib/config.ts`, two constants, the same arrangement as MyStockio:
 
 ```ts
-const PROD_BASE = "https://financegpt-backend-phm6.onrender.com/";
-const DEV_BASE = "https://financegpt-backend-phm6.onrender.com/";
-// const PROD_BASE = "http://localhost:5000/"; // a production build
-// const DEV_BASE = "http://localhost:5000/"; // vite dev
+// const PROD_BASE = "https://financegpt-backend-phm6.onrender.com/";
+// const DEV_BASE = "https://financegpt-backend-phm6.onrender.com/";
+const PROD_BASE = "http://localhost:5000/"; // a production build
+const DEV_BASE = "http://localhost:5000/"; // vite dev
 ```
 
 `vite dev` uses `DEV_BASE` and a build uses `PROD_BASE`. Override either without touching the source

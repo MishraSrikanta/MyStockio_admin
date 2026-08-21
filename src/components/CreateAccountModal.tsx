@@ -1,12 +1,23 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { DEFAULT_PLAN, PLANS } from '@/lib/config'
 import { SIGNUP_ACCESS_KEY } from '@/lib/access'
 import { ApiError, createAccount } from '@/lib/api'
+import {
+  checkRoleChoice,
+  nameOf,
+  needsOwner,
+  owners as ownersOf,
+  Role,
+  ROLE_LABEL,
+  ROLE_NOTE,
+  ROLES,
+  shopNameFor,
+} from '@/lib/roles'
 import type { AdminAccount } from '@/lib/subscription'
 import { Button, Input, Modal, Notice } from './ui'
 
 /**
- * Creating a customer account.
+ * Creating a login — an owner, or somebody who works for one.
  *
  * This goes through the **ordinary signup route** the shop app uses — genuinely the same endpoint,
  * which is why it works against the real backend today with nothing added. Two consequences worth
@@ -17,20 +28,48 @@ import { Button, Input, Modal, Notice } from './ui'
  *     than by entering a date far in the future.
  *   · Registration may be gated by an invite code. MyStockio's own signup form sends one, so the
  *     field is here too — leave it blank if the backend does not ask for it.
+ *
+ * ── The role, and what it changes on this form ─────────────────────────────────
+ * **Role is the first question**, because it decides what the rest of the form even asks:
+ *
+ *   · **Owner** — the customer. Gets a plan, gets a licence, gets chased for renewal, and has no
+ *     owner above them, so the owner field is not shown at all. Not disabled, not greyed out:
+ *     *absent*, because a field that can never apply is noise.
+ *   · **Anyone else** — staff. Belongs to an owner, so the owner's email becomes required. The plan
+ *     picker disappears instead: staff ride on their owner's licence, and offering to sell a cashier
+ *     their own subscription is offering to double-charge a shop.
+ *
+ * The owner is picked from the accounts already loaded, with a typed email as the fallback for one
+ * that is not in the list. The email is what gets sent either way — the server resolves it and is
+ * the authority on whether it exists and is really an owner. Posting an id from a list this screen
+ * happens to be holding would attach somebody to the wrong shop the moment the list went stale.
  */
 export function CreateAccountModal({
   onClose,
   onCreated,
+  accounts,
+  staffFor = null,
 }: {
   onClose: () => void
   onCreated: (account: AdminAccount) => void
+  /** Everything already loaded, so an owner can be picked rather than remembered. */
+  accounts: AdminAccount[]
+  /**
+   * Opened from an owner's row: start as staff, already pointed at them.
+   *
+   * The role still defaults to the first non-owner one and stays changeable — the row said *who*,
+   * not *what*, and guessing that a new login is a cashier because the button was near a cashier
+   * would be guessing.
+   */
+  staffFor?: AdminAccount | null
 }) {
   const [form, setForm] = useState({
-    shopName: '',
+    shopName: staffFor?.shopName ?? '',
     name: '',
     email: '',
     phone: '',
     password: '',
+    ownerEmail: staffFor?.email ?? '',
     /*
      * Pre-filled rather than asked for. Whoever is on this screen has already passed the console
      * login, so making them retype a key that is a compile-time constant adds a step and no
@@ -38,14 +77,50 @@ export function CreateAccountModal({
      */
     developerCode: SIGNUP_ACCESS_KEY,
   })
+  const [role, setRole] = useState<Role>(staffFor ? Role.Cashier : Role.Owner)
   const [plan, setPlan] = useState<string>(DEFAULT_PLAN)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
+  /**
+   * Whether the shop name has been typed in by hand.
+   *
+   * The one thing an auto-filled field must never do is overwrite something a person entered. So
+   * the moment the field is edited it stops following the owner, and picking a different owner
+   * afterwards leaves what was typed alone.
+   */
+  const [shopNameEdited, setShopNameEdited] = useState(false)
+
+  const staff = needsOwner(role)
+  /** Only owners can be picked as an owner — two levels, so staff are not offered. */
+  const pickableOwners = useMemo(() => ownersOf(accounts), [accounts])
 
   const set = (key: keyof typeof form) => (event: React.ChangeEvent<HTMLInputElement>) => {
     setForm((current) => ({ ...current, [key]: event.target.value }))
+    if (key === 'shopName') setShopNameEdited(true)
     if (fieldErrors[key]) setFieldErrors((current) => ({ ...current, [key]: '' }))
+  }
+
+  /**
+   * Points the form at an owner, and brings the shop name with it.
+   *
+   * A staff login is somebody who works in that shop — same shop name, and the licence is the
+   * owner's whether this form says so or not. Making somebody retype the shop name they can see two
+   * fields above is busywork, and the version they retype is the one that ends up spelled
+   * differently.
+   *
+   * Copied rather than locked: a second branch under one owner is a real thing, so the field stays
+   * editable. And copied only while untouched — see `shopNameEdited`.
+   */
+  const chooseOwner = (email: string) => {
+    const owner = accounts.find((account) => account.email.trim().toLowerCase() === email.trim().toLowerCase()) ?? null
+    setForm((current) => ({
+      ...current,
+      ownerEmail: email,
+      /* The rule lives in `roles.ts`, where the tests can hold it to account. */
+      shopName: shopNameFor({ owner, current: current.shopName, edited: shopNameEdited }),
+    }))
+    setFieldErrors((current) => ({ ...current, ownerEmail: '' }))
   }
 
   /**
@@ -57,10 +132,15 @@ export function CreateAccountModal({
    */
   const validate = () => {
     const errors: Record<string, string> = {}
-    if (!form.name.trim()) errors.name = 'Enter the owner’s name.'
+    if (!form.name.trim()) errors.name = staff ? 'Enter their name.' : 'Enter the owner’s name.'
     if (!form.email.trim()) errors.email = 'An email is required — it is their user id.'
     if (!form.password) errors.password = 'Set a password you can read back to them.'
     if (!form.developerCode.trim()) errors.developerCode = 'The backend expects an invite code.'
+
+    /* The role rule, from the same function the tests assert against. */
+    const problem = checkRoleChoice({ role, ownerEmail: form.ownerEmail }, accounts)
+    if (problem) errors[problem.field] = problem.message
+
     setFieldErrors(errors)
     return Object.keys(errors).length === 0
   }
@@ -79,7 +159,10 @@ export function CreateAccountModal({
         password: form.password,
         phone: form.phone,
         shopName: form.shopName,
-        plan,
+        /* A plan for an owner only — staff are on their owner's licence. */
+        ...(staff ? {} : { plan }),
+        shopRole: role,
+        ...(staff ? { ownerEmail: form.ownerEmail.trim() } : {}),
         developerCode: form.developerCode.trim() || undefined,
       })
       onCreated(account)
@@ -95,14 +178,14 @@ export function CreateAccountModal({
     <Modal
       open
       onClose={onClose}
-      title="New customer account"
+      title={staff ? `New ${ROLE_LABEL[role].toLowerCase()} login` : 'New customer account'}
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>
             Cancel
           </Button>
           <Button variant="primary" loading={busy} onClick={(event) => void submit(event)}>
-            Create account
+            {staff ? `Create ${ROLE_LABEL[role].toLowerCase()}` : 'Create account'}
           </Button>
         </>
       }
@@ -110,9 +193,103 @@ export function CreateAccountModal({
       <form onSubmit={submit} className="space-y-3">
         {error && <Notice tone="danger" onDismiss={() => setError('')}>{error}</Notice>}
 
+        {/* ── the role, first, because it decides what the rest of the form asks ── */}
+        <fieldset>
+          <legend className="label">Role</legend>
+          <div className="grid gap-1.5 sm:grid-cols-2">
+            {ROLES.map((option) => (
+              <label
+                key={option}
+                className={`flex cursor-pointer items-start gap-2 rounded-xl border p-2.5 transition-colors ${
+                  role === option ? 'border-sky-500 bg-sky-500/10' : 'border-slate-700 hover:border-slate-500'
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="shopRole"
+                  value={option}
+                  checked={role === option}
+                  onChange={() => {
+                    setRole(option)
+                    /* Clearing both: neither error can still be true of the new choice. */
+                    setFieldErrors((current) => ({ ...current, ownerEmail: '', role: '' }))
+                  }}
+                  className="mt-0.5 h-3.5 w-3.5 accent-sky-500"
+                />
+                <span className="min-w-0">
+                  <span className="block text-[13px] font-semibold text-slate-100">{ROLE_LABEL[option]}</span>
+                  <span className="block text-[11.5px] leading-snug text-slate-400">{ROLE_NOTE[option]}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+          {fieldErrors.role && <p className="mt-1 text-[12px] text-rose-300">{fieldErrors.role}</p>}
+        </fieldset>
+
+        {/*
+          Shown only for staff. An owner has nobody above them, so the field is absent rather than
+          disabled — a control that can never apply is noise, and a greyed-out one still gets read.
+        */}
+        {staff && (
+          <div className="rounded-xl border border-sky-500/30 bg-sky-500/[0.07] p-3">
+            {pickableOwners.length > 0 && (
+              <select
+                id="owner-picker"
+                aria-label="Choose an owner"
+                className="field mb-2"
+                value={pickableOwners.some((o) => o.email === form.ownerEmail) ? form.ownerEmail : ''}
+                onChange={(event) => chooseOwner(event.target.value)}
+              >
+                <option value="">Choose an owner…</option>
+                {pickableOwners.map((owner) => (
+                  <option key={owner.id} value={owner.email}>
+                    {nameOf(owner)} — {owner.email}
+                  </option>
+                ))}
+              </select>
+            )}
+            <Input
+              label="Owner’s email"
+              value={form.ownerEmail}
+              /* Through `chooseOwner`, so a typed address fills the shop name just as the picker does. */
+              onChange={(event) => chooseOwner(event.target.value)}
+              placeholder="owner@shop.com"
+              error={fieldErrors.ownerEmail}
+              hint={
+                pickableOwners.length > 0
+                  ? 'Picked above, or typed here if they are not in the list yet.'
+                  : 'No owners are loaded yet — type the email of the owner this login belongs to.'
+              }
+            />
+            <p className="mt-1.5 text-[11.5px] leading-relaxed text-slate-400">
+              This login takes the owner’s <strong className="font-semibold text-slate-300">shop name,
+              plan and expiry</strong>. The licence stays the owner’s — read live, so it follows every
+              renewal — which is why this login is never chased and never counted as a second customer.
+            </p>
+          </div>
+        )}
+
         <div className="grid gap-3 sm:grid-cols-2">
-          <Input label="Shop name" value={form.shopName} onChange={set('shopName')} placeholder="Balaji Traders" />
-          <Input label="Owner name" value={form.name} onChange={set('name')} placeholder="Ramesh Kumar" error={fieldErrors.name} />
+          <Input
+            label={staff ? 'Shop name (optional)' : 'Shop name'}
+            value={form.shopName}
+            onChange={set('shopName')}
+            placeholder="Balaji Traders"
+            hint={
+              staff && !shopNameEdited && form.shopName
+                ? 'Copied from the owner. Change it if this login sits in a different branch.'
+                : staff
+                  ? 'Left blank, the owner’s is used.'
+                  : undefined
+            }
+          />
+          <Input
+            label={staff ? 'Their name' : 'Owner name'}
+            value={form.name}
+            onChange={set('name')}
+            placeholder={staff ? 'Rekha Devi' : 'Ramesh Kumar'}
+            error={fieldErrors.name}
+          />
           <Input
             label="Email (their user id)"
             type="email"
@@ -133,6 +310,8 @@ export function CreateAccountModal({
           />
         </div>
 
+        {/* Owners only. Staff are on the owner's licence — see the note in the owner block above. */}
+        {!staff && (
         <fieldset>
           <legend className="label">Subscription</legend>
           <div className="grid gap-1.5 sm:grid-cols-3">
@@ -163,6 +342,7 @@ export function CreateAccountModal({
             what stops the two from ever disagreeing.
           </p>
         </fieldset>
+        )}
 
         <Input
           label="Invite code (sent as developerCode)"

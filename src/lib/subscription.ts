@@ -34,7 +34,18 @@ export interface AdminAccount {
   name?: string
   phone?: string
   shopName?: string
+  /**
+   * **Platform privilege**, not a job title: `admin` for an ordinary account, `superadmin` for one
+   * that may open the admin API. This is the field the server authorises against — `lib/roles.ts`
+   * explains why the shop job title is deliberately a different field.
+   */
   role?: string
+  /** What they do in the shop — `Role` in `lib/roles.ts`. Absent means owner. */
+  shopRole?: string | null
+  /** The owner this login belongs to. `null` on an owner. */
+  ownerId?: string | null
+  /** The owner's email, as given when the login was created. Kept for display. */
+  ownerEmail?: string | null
   subscription?: Subscription
   createdAt?: string
   /** Set by the admin API when a payment has been recorded. */

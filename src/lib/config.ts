@@ -11,6 +11,7 @@
 // /** Local backend, used by `vite dev`. */
 // const DEV_BASE = 'http://localhost:5000/'
 
+
 const PROD_BASE = "https://financegpt-backend-phm6.onrender.com/";
 const DEV_BASE = "https://financegpt-backend-phm6.onrender.com/";
 
@@ -63,12 +64,16 @@ export enum APIEndpoint {
   /**
    * POST · public · 200 `{ accessToken, account }`. Refuses a shop account with 403.
    *
-   * Sent the id and password just typed at the door, for entries carrying an `email` in `gate.ts` —
-   * there is no separate console identity. Called only *after* the local check has passed, so a
-   * failure here empties the account list rather than refusing the login.
+   * Sent the email and password typed on the login screen. **This is the sign-in** — the console
+   * holds no credentials of its own, so the server's answer decides whether it opens at all.
    */
   ADMIN_LOGIN = 'api/v1/admin/login',
-  /** GET · admin · 200 `{ accounts[], total }` — customers only, newest first, unpaged. */
+  /**
+   * GET · admin · 200 `{ accounts[], total }` — customers only, newest first, unpaged.
+   *
+   * Owners and staff both, with `shopRole` and `ownerId` on each, so one request builds the whole
+   * tree. Optional `?ownerId=` for one owner's staff and `?shopRole=` for one kind of login.
+   */
   ADMIN_ACCOUNTS = 'api/v1/admin/accounts',
   /**
    * One account. Append `/{id}`.

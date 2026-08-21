@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { PLAN_PRICE, PLANS } from '@/lib/config'
 import { ApiError, deleteAccount, recordPayment, updateAccount } from '@/lib/api'
 import { formatAmount, normalisePhone, reminderMessage, toneFor, whatsappLink } from '@/lib/outreach'
+import { childrenOf, isStaff, nameOf, ownerOf, ROLE_LABEL, roleOf } from '@/lib/roles'
 import {
   type AdminAccount,
   describeTimeLeft,
@@ -22,13 +23,22 @@ import { Badge, Button, Input, Modal, Notice } from './ui'
  */
 export function AccountDrawer({
   account,
+  accounts,
   onClose,
   onChanged,
 }: {
   account: AdminAccount
+  /** Everything loaded, so this shop's staff — or this login's owner — can be shown. */
+  accounts: AdminAccount[]
   onClose: () => void
   onChanged: (account: AdminAccount | null) => void
 }) {
+  /* Who this is, and the family around them. Read once here rather than in four places below. */
+  const role = roleOf(account)
+  const staffMember = isStaff(account)
+  const owner = staffMember ? ownerOf(account, accounts) : null
+  const staff = staffMember ? [] : childrenOf(accounts, account.id)
+
   const [form, setForm] = useState({
     shopName: account.shopName ?? '',
     name: account.name ?? '',
@@ -182,12 +192,68 @@ export function AccountDrawer({
           ))}
         </div>
 
+        {/* ── who this login is, and who it belongs to ────────────────────── */}
+        <section className="rounded-xl border border-white/10 bg-slate-950/30 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-[12px] font-bold uppercase tracking-wider text-slate-400">
+              {staffMember ? 'Their role' : 'Staff logins'}
+            </h3>
+            <Badge tone={staffMember ? 'info' : 'neutral'}>{ROLE_LABEL[role]}</Badge>
+          </div>
+
+          {staffMember ? (
+            /*
+             * A staff login. The licence tiles above are their **owner's**, so it is said here in
+             * words — a screen that shows a cashier an expiry with no explanation invites somebody
+             * to renew a cashier, which the server refuses and which nobody should be asked to try.
+             */
+            <p className="mt-2 text-[12.5px] leading-relaxed text-slate-300">
+              {owner ? (
+                <>
+                  Works for <strong className="font-semibold text-slate-100">{nameOf(owner)}</strong>{' '}
+                  <span className="text-slate-500">({owner.email})</span> and signs in on that shop’s licence. Payments and renewals belong to the owner, not to this login.
+                </>
+              ) : (
+                <span className="text-rose-300">
+                  This login has no owner on record{account.ownerEmail ? ` (${account.ownerEmail} was given)` : ''}.
+                  It can still sign in, but it is attached to no shop and no licence — set an owner, or
+                  delete it.
+                </span>
+              )}
+            </p>
+          ) : staff.length === 0 ? (
+            <p className="mt-2 text-[12.5px] leading-relaxed text-slate-400">
+              No staff logins yet. Cashiers, product managers and the rest are created from the
+              accounts table — <em>add staff</em> on this shop’s row — and they ride on this licence
+              rather than buying their own.
+            </p>
+          ) : (
+            <>
+              <ul className="mt-2 divide-y divide-white/[0.06]">
+                {staff.map((member) => (
+                  <li key={member.id} className="flex items-baseline justify-between gap-3 py-1.5">
+                    <span className="min-w-0">
+                      <span className="block truncate text-[13px] text-slate-100">{member.name || member.email}</span>
+                      <span className="block truncate text-[11.5px] text-slate-500">{member.email}</span>
+                    </span>
+                    <Badge tone="info">{ROLE_LABEL[roleOf(member)]}</Badge>
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-2 text-[11.5px] leading-relaxed text-slate-500">
+                All {staff.length} on this shop’s licence. Deleting this account is refused while they
+                exist — they would be left able to sign in and attached to nothing.
+              </p>
+            </>
+          )}
+        </section>
+
         {/* ── details ───────────────────────────────────────────────────── */}
         <section>
           <h3 className="mb-2 text-[12px] font-bold uppercase tracking-wider text-slate-400">Details</h3>
           <div className="grid gap-3 sm:grid-cols-2">
             <Input label="Shop name" value={form.shopName} onChange={set('shopName')} />
-            <Input label="Owner name" value={form.name} onChange={set('name')} />
+            <Input label={staffMember ? 'Their name' : 'Owner name'} value={form.name} onChange={set('name')} />
             <Input
               label="Email (their user id)"
               value={form.email}
@@ -213,6 +279,11 @@ export function AccountDrawer({
         </section>
 
         {/* ── payment ───────────────────────────────────────────────────── */}
+        {/*
+          Owners only. Staff hold no licence, so the server refuses a payment against one — offering
+          the form anyway would be offering an action that cannot succeed.
+        */}
+        {!staffMember && (
         <section className="rounded-xl border border-emerald-500/25 bg-emerald-500/[0.05] p-3">
           <h3 className="mb-2 text-[12px] font-bold uppercase tracking-wider text-emerald-300">
             Record a payment
@@ -286,8 +357,10 @@ export function AccountDrawer({
             )}
           </div>
         </section>
+        )}
 
-        {/* ── chasing ───────────────────────────────────────────────────── */}
+        {/* Chasing is an owner thing as well: a cashier is never rung about a renewal. */}
+        {!staffMember && (
         <section>
           <h3 className="mb-2 text-[12px] font-bold uppercase tracking-wider text-slate-400">
             Renewal reminder
@@ -314,6 +387,7 @@ export function AccountDrawer({
             </Button>
           </div>
         </section>
+        )}
 
         {/* ── deletion ──────────────────────────────────────────────────── */}
         <section className="rounded-xl border border-rose-500/25 bg-rose-500/[0.05] p-3">
@@ -322,6 +396,13 @@ export function AccountDrawer({
             Permanent. They will not be able to sign in, and their payment history goes with it.
             Their Excel file is on their own computer and is not touched.
           </p>
+          {staff.length > 0 && (
+            <p className="mt-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-[12px] leading-relaxed text-amber-200">
+              The server will refuse this while {staff.length} staff login{staff.length === 1 ? '' : 's'} belong to
+              this shop. Move or delete them first — deleting them along with the owner would take away
+              logins nobody asked about.
+            </p>
+          )}
           {/*
             Typing the name, not an "are you sure" — a confirm dialog is dismissed by reflex, and
             this is the one irreversible action on the screen.

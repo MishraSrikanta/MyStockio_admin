@@ -1,34 +1,19 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react'
 import { APP_NAME, CONSOLE_NAME, OFFICIAL_SITE_URL, logoUrl } from './assets/brand'
 import { AccountDrawer } from './components/AccountDrawer'
+import { AccountsTable } from './components/AccountsTable'
 import { CreateAccountModal } from './components/CreateAccountModal'
 import { Dashboard } from './components/Dashboard'
 import { PaymentModal } from './components/PaymentModal'
 import { RevenueReport } from './components/RevenueReport'
-import { ShaderBackground } from './components/ShaderBackground'
 import { LoginScreen } from './components/LoginScreen'
-import { Badge, Button, Input, Notice, Stat } from './components/ui'
+import { Button, Input, Notice, Stat } from './components/ui'
 import { type AccountFilter, FILTER_LABEL, summarise, visibleAccounts } from './lib/accounts'
 import { ApiError, closeSession, isMissingAdminApi, listAccounts, listPayments } from './lib/api'
 import { ADMIN_STORAGE } from './lib/config'
-import { formatAmount, normalisePhone, reminderMessage, toneFor, whatsappLink } from './lib/outreach'
+import { normalisePhone } from './lib/outreach'
 import type { Payment } from './lib/revenue'
-import {
-  type AdminAccount,
-  describeTimeLeft,
-  formatDate,
-  isLifetime,
-  planLabel,
-  subscriptionState,
-} from './lib/subscription'
-
-const STATE_TONE = {
-  lifetime: 'violet',
-  active: 'success',
-  expiring: 'warning',
-  expired: 'danger',
-  unknown: 'neutral',
-} as const
+import type { AdminAccount } from './lib/subscription'
 
 export function App() {
   /*
@@ -55,6 +40,8 @@ export function App() {
   const [filter, setFilter] = useState<AccountFilter>('all')
   const [selected, setSelected] = useState<AdminAccount | null>(null)
   const [creating, setCreating] = useState(false)
+  /** When the create form was opened from an owner row: the owner the new login belongs to. */
+  const [staffFor, setStaffFor] = useState<AdminAccount | null>(null)
   const [paying, setPaying] = useState(false)
   const [reporting, setReporting] = useState(false)
 
@@ -119,7 +106,36 @@ export function App() {
 
   const reachable = (account: AdminAccount) => normalisePhone(account.phone) !== ''
   const summary = useMemo(() => summarise(accounts, reachable), [accounts])
-  const shown = useMemo(() => visibleAccounts(accounts, { query, filter }), [accounts, query, filter])
+  /*
+   * The list follows the typing, it does not gate it.
+   *
+   * Filtering a few thousand rows and re-rendering the table is real work — measured at tens of
+   * milliseconds, and over 200ms on a long list — and doing it inside the keystroke is what made
+   * typing feel like wading. `useDeferredValue` splits the two: the character appears immediately
+   * because that render only touches the input, and the table catches up in a second, interruptible
+   * render that a further keystroke simply supersedes.
+   *
+   * So the cost of the list no longer lands on the person typing, however long the list gets.
+   */
+  const deferredQuery = useDeferredValue(query)
+  const shown = useMemo(
+    () => visibleAccounts(accounts, { query: deferredQuery, filter }),
+    [accounts, deferredQuery, filter],
+  )
+  /** True while the table is a keystroke or two behind, so the count can say so instead of lying. */
+  const catchingUp = deferredQuery !== query
+
+  /*
+   * Stable, because the table's rows are memoised on their props.
+   *
+   * An inline arrow here would be a new function on every render, every row would see a changed prop,
+   * and every row would re-render — quietly undoing the memoisation a keystroke away.
+   */
+  const addStaffTo = useCallback((owner: AdminAccount) => {
+    /* Straight into the create form as staff, already pointed at this owner. */
+    setStaffFor(owner)
+    setCreating(true)
+  }, [])
 
   if (!signedIn) return <LoginScreen onIn={setWho} />
 
@@ -136,8 +152,17 @@ export function App() {
 
   return (
     <div className="mx-auto max-w-7xl px-3 py-4 sm:px-5">
-      {/* Behind everything. Falls back to the CSS gradient where WebGL is unavailable. */}
-      <ShaderBackground />
+      {/*
+        ── No shader on this screen, deliberately ──────────────────────────────
+        The WebGL background draws a full-screen quad thirty times a second, forever, and this is
+        the screen with the long table, the search box and the forms — the one place where the
+        browser needs its frames for something a person is waiting on.
+
+        The CSS gradient underneath (`index.css`) keeps the same palette and the same slow drift for
+        the price of one transform on a composited layer, which is close to free. So the decoration
+        stays where it costs nothing and the console gets its frames back. The shader still greets
+        you on the login screen, which has two fields and nothing to re-render.
+      */}
 
       <header className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-3">
@@ -149,7 +174,8 @@ export function App() {
               {who && <span className="text-[12px] font-medium text-slate-500">· {who}</span>}
             </h1>
           <p className="text-[12.5px] text-slate-400">
-            {summary.total} account{summary.total === 1 ? '' : 's'} ·{' '}
+            {summary.total} owner{summary.total === 1 ? '' : 's'}
+            {summary.staff > 0 && ` · ${summary.staff} staff login${summary.staff === 1 ? '' : 's'}`} ·{' '}
             {summary.needsRenewal > 0 ? (
               <span className="font-semibold text-amber-300">{summary.needsRenewal} to chase</span>
             ) : (
@@ -241,13 +267,15 @@ export function App() {
         />
       ) : (
         <>
-      <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+      <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-7">
         <Stat label="All" value={summary.total} onClick={() => setFilter('all')} />
         <Stat label="To chase" value={summary.needsRenewal} tone="warning" onClick={() => setFilter('needs-renewal')} />
         <Stat label="Expired" value={summary.expired} tone="danger" onClick={() => setFilter('expired')} />
         <Stat label="Expiring" value={summary.expiring} tone="warning" onClick={() => setFilter('expiring')} />
         <Stat label="Active" value={summary.active} tone="success" onClick={() => setFilter('active')} />
         <Stat label="Lifetime" value={summary.lifetime} tone="violet" onClick={() => setFilter('lifetime')} />
+        {/* Staff sit apart from every other tile: they are logins, not customers, and hold no licence. */}
+        <Stat label="Staff logins" value={summary.staff} tone="info" onClick={() => setFilter('staff')} />
       </div>
 
       <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -265,97 +293,37 @@ export function App() {
           ))}
         </select>
         <span className="text-[12.5px] text-slate-500">
+          {/*
+            While the table is a keystroke behind, the count says so. Showing the old number as
+            though it were the answer to what was just typed is the one thing deferring must not do.
+          */}
           {shown.length} shown
+          {catchingUp && <span className="text-slate-600"> · filtering…</span>}
           {summary.unknown > 0 && ` · ${summary.unknown} with no subscription data`}
         </span>
       </div>
 
-      <div className="card overflow-x-auto">
-        <table className="w-full min-w-[860px] border-separate border-spacing-0">
-          <thead>
-            <tr>
-              <th className="th">Shop</th>
-              <th className="th">User id (email)</th>
-              <th className="th">Phone</th>
-              <th className="th">Plan</th>
-              <th className="th">Time left</th>
-              <th className="th">Expires</th>
-              <th className="th">Last payment</th>
-              <th className="th">Chase</th>
-            </tr>
-          </thead>
-          <tbody>
-            {shown.length === 0 ? (
-              <tr>
-                <td className="td text-center text-slate-500" colSpan={8}>
-                  {loading ? 'Loading…' : accounts.length === 0 ? 'No accounts yet.' : 'Nothing matches that.'}
-                </td>
-              </tr>
-            ) : (
-              shown.map((account) => {
-                const state = subscriptionState(account)
-                const link = whatsappLink(account, reminderMessage(account, toneFor(account)))
-                return (
-                  <tr key={account.id} className="group hover:bg-slate-800/40">
-                    <td className="td">
-                      <button type="button" className="text-left font-semibold text-sky-300 hover:underline" onClick={() => setSelected(account)}>
-                        {account.shopName || account.name || '(no name)'}
-                      </button>
-                      {account.name && account.shopName && (
-                        <span className="block text-[11.5px] text-slate-500">{account.name}</span>
-                      )}
-                    </td>
-                    <td className="td num truncate">{account.email}</td>
-                    <td className="td num">
-                      {account.phone ? (
-                        reachable(account) ? (
-                          account.phone
-                        ) : (
-                          <span className="text-rose-300" title="WhatsApp cannot use this number">
-                            {account.phone}
-                          </span>
-                        )
-                      ) : (
-                        <span className="text-slate-600">—</span>
-                      )}
-                    </td>
-                    <td className="td">{planLabel(account.subscription?.plan)}</td>
-                    <td className="td">
-                      <Badge tone={STATE_TONE[state]}>{describeTimeLeft(account)}</Badge>
-                    </td>
-                    <td className="td num">{isLifetime(account) ? 'Never' : formatDate(account.subscription?.expiresAt) || '—'}</td>
-                    <td className="td num">
-                      {account.lastPaymentAt
-                        ? `₹${formatAmount(account.lastPaymentAmount ?? 0)}`
-                        : <span className="text-slate-600">—</span>}
-                    </td>
-                    <td className="td">
-                      {state === 'lifetime' || state === 'active' ? (
-                        <span className="text-slate-600">—</span>
-                      ) : link ? (
-                        <a href={link} target="_blank" rel="noreferrer" className="text-emerald-300 hover:underline">
-                          WhatsApp
-                        </a>
-                      ) : (
-                        <span className="text-rose-400" title="No usable phone number">
-                          no number
-                        </span>
-                      )}
-                    </td>
-                  </tr>
-                )
-              })
-            )}
-          </tbody>
-        </table>
-      </div>
+      <AccountsTable
+        rows={shown}
+        accounts={accounts}
+        loading={loading}
+        onSelect={setSelected}
+        onAddStaff={addStaffTo}
+      />
         </>
       )}
 
-      {selected && <AccountDrawer account={selected} onClose={() => setSelected(null)} onChanged={applyChange} />}
+      {selected && (
+        <AccountDrawer account={selected} accounts={accounts} onClose={() => setSelected(null)} onChanged={applyChange} />
+      )}
       {creating && (
         <CreateAccountModal
-          onClose={() => setCreating(false)}
+          accounts={accounts}
+          staffFor={staffFor}
+          onClose={() => {
+            setCreating(false)
+            setStaffFor(null)
+          }}
           onCreated={(account) => {
             /* Straight into the list — a created account that needs a refresh to appear reads as a
                failure, and the operator retries and creates a duplicate. */

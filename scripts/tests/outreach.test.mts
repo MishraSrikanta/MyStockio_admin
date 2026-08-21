@@ -25,7 +25,19 @@ const check = (name: string, ok: boolean, detail = '') => {
   if (!ok) failures += 1
 }
 
-const NOW = new Date('2026-08-20T10:00:00.000Z')
+/*
+ * **The real clock, deliberately — not a frozen date.**
+ *
+ * This was pinned to a fixed timestamp, and it worked until the day rolled over: the fixtures dated
+ * their expiries from the frozen moment while `reminderMessage` read the actual date, so "7 days
+ * left" quietly became "6 days left" overnight and a suite that had passed for weeks failed on a
+ * calendar boundary rather than on a change.
+ *
+ * The functions that take a `now` are still given this one, so those assertions stay exact. The ones
+ * that cannot — the message builders read the clock themselves — now agree with the fixtures because
+ * both sides start from the same instant, whatever day it is.
+ */
+const NOW = new Date()
 const DAY = 24 * 60 * 60 * 1000
 
 const account = (over: Partial<AdminAccount> & { days?: number | null }): AdminAccount => {

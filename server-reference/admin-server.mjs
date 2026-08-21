@@ -116,6 +116,64 @@ function buildSubscription(plan, from = new Date()) {
   }
 }
 
+/* ────────────────────────────────────────────────────────────────── roles ── */
+
+/**
+ * What somebody does in the shop. Must match `Role` in `src/lib/roles.ts`.
+ *
+ * **`superadmin` is not in this list and must never be**, which is the whole reason this is a
+ * separate field from `role`. `auth/register` is public: if a job title were read out of the field
+ * the authoriser trusts, `{"role":"superadmin"}` in a signup body would be a request to become an
+ * administrator. `role` keeps authorising; `shopRole` only describes a job.
+ */
+const SHOP_ROLES = ['owner', 'manager', 'cashier', 'product_manager', 'accountant']
+const DEFAULT_SHOP_ROLE = 'owner'
+
+/**
+ * The shop role from a request body, defaulting to owner.
+ *
+ * An absent field is an owner, so a client written before roles existed keeps creating customers
+ * exactly as it did. An *unrecognised* one is refused rather than defaulted: silently turning
+ * `cashierr` into an owner would hand a counter login somebody's licence.
+ */
+function readShopRole(value) {
+  if (value === undefined || value === null || value === '') return DEFAULT_SHOP_ROLE
+  const role = String(value)
+  return SHOP_ROLES.includes(role) ? role : null
+}
+
+/**
+ * Resolves the owner an incoming staff account should hang from.
+ *
+ * Returns `{ owner }` on success or `{ error }` with a sentence for the operator. Three refusals,
+ * each a different mistake:
+ *
+ *   · no email at all — the one thing a staff login cannot do without
+ *   · an email nobody has — usually the owner has not been created yet
+ *   · an email belonging to **staff** — the hierarchy is two levels, and a cashier cannot have
+ *     staff of their own. Refused here rather than accepted and flattened, because flattening would
+ *     silently attach somebody to the wrong shop.
+ */
+function resolveOwner(ownerEmail) {
+  const email = String(ownerEmail ?? '').trim().toLowerCase()
+  if (!email) return { error: "An owner's email is required for this role." }
+
+  const owner = db.users.find((u) => u.email === email)
+  if (!owner) return { error: 'No account has that email. Create the owner first.' }
+  if (owner.role === 'superadmin') return { error: 'An administrator cannot own shop logins.' }
+
+  const theirRole = owner.shopRole ?? DEFAULT_SHOP_ROLE
+  if (theirRole !== 'owner') {
+    return { error: `That account is a ${theirRole.replace('_', ' ')}, not an owner. Name the owner they report to instead.` }
+  }
+  return { owner }
+}
+
+/** How many staff hang off an account. Used to refuse deleting or demoting an owner who has them. */
+function staffOf(ownerId) {
+  return db.users.filter((u) => (u.shopRole ?? DEFAULT_SHOP_ROLE) !== 'owner' && u.ownerId === ownerId)
+}
+
 /**
  * Renewal, extending from whichever is later: the current expiry or today.
  *
@@ -131,6 +189,22 @@ function renewSubscription(existing, plan) {
   const built = buildSubscription(plan, from)
   /* `startedAt` records when the licence period began, which a renewal does not reset. */
   return { ...built, startedAt: existing?.startedAt || built.startedAt }
+}
+
+/**
+ * The subscription fields for an account, resolving a staff member's to their owner's.
+ *
+ * `subscriptionFrom` is the honest part: `'own'` for an owner, `'owner'` for a staff member reading
+ * somebody else's, and `'none'` when a staff member's owner has been deleted. A screen that cannot
+ * tell those apart would show a cashier as an expired customer and put them in the chase list.
+ */
+function staffSubscription(user) {
+  const role = user.shopRole ?? DEFAULT_SHOP_ROLE
+  if (role === 'owner') return { subscription: user.subscription ?? null, subscriptionFrom: 'own' }
+
+  const owner = user.ownerId ? db.users.find((u) => u.id === user.ownerId) : null
+  if (!owner) return { subscription: null, subscriptionFrom: 'none' }
+  return { subscription: owner.subscription ?? null, subscriptionFrom: 'owner' }
 }
 
 /* ─────────────────────────────────────────────────────────────────── shaping ── */
@@ -152,8 +226,19 @@ function publicUser(user) {
     name: user.name,
     phone: user.phone,
     shopName: user.shopName,
+    /* Platform privilege. Not a job title — see SHOP_ROLES. */
     role: user.role,
-    subscription: user.subscription,
+    shopRole: user.shopRole ?? 'owner',
+    ownerId: user.ownerId ?? null,
+    ownerEmail: user.ownerEmail ?? null,
+    /**
+     * Staff carry their **owner's** licence, read live rather than copied.
+     *
+     * Copying it at creation would drift the moment the owner renews, and the drift is invisible:
+     * a cashier locked out in April while the shop's licence runs to next March. So the answer is
+     * computed on every read, and `subscriptionFrom` says whose it is.
+     */
+    ...staffSubscription(user),
     createdAt: user.createdAt,
     lastPaymentAt: last ? last.at : null,
     lastPaymentAmount: last ? last.amount : null,
@@ -333,14 +418,63 @@ const server = createServer((req, res) => {
         return
       }
 
+      const shopRole = readShopRole(body.shopRole)
+      if (!shopRole) {
+        sendError(res, 400, 'VALIDATION_FAILED', 'That is not a role this app knows.', origin, {
+          shopRole: `must be one of ${SHOP_ROLES.join(', ')}`,
+        })
+        return
+      }
+
+      /*
+       * Staff hang from an owner; owners hang from nobody. Resolved to an **id** and stored as one,
+       * with the email kept alongside only for display: matching on email at read time would
+       * silently re-point a cashier at somebody else the day an owner changes their address.
+       */
+      let ownerId = null
+      let ownerEmail = null
+      if (shopRole !== 'owner') {
+        const resolved = resolveOwner(body.ownerEmail)
+        if (resolved.error) {
+          sendError(res, 400, 'VALIDATION_FAILED', resolved.error, origin, { ownerEmail: 'is required and must be an owner' })
+          return
+        }
+        ownerId = resolved.owner.id
+        ownerEmail = resolved.owner.email
+      }
+
+      /*
+       * A staff login works in the owner's shop, so a blank shop name inherits it.
+       *
+       * "Optional" has to mean *inherited*, not *empty*: a cashier row reading "(no name)" beside an
+       * owner called Balaji Traders is not a field somebody chose to leave blank, it is a hole in the
+       * screen. A value that was actually typed is kept as typed — one owner can have two branches.
+       */
+      const typedShopName = String(body.shopName ?? '').trim().slice(0, 120)
+      const inheritedShopName =
+        !typedShopName && ownerId ? String(db.users.find((u) => u.id === ownerId)?.shopName ?? '') : ''
+
       const user = {
         id: randomBytes(12).toString('hex'),
         email,
         name,
         phone: String(body.phone ?? '').trim().slice(0, 20),
-        shopName: String(body.shopName ?? '').trim().slice(0, 120),
+        shopName: typedShopName || inheritedShopName,
+        /*
+         * **`role` is set here, never read from the body.** It is what the admin API authorises
+         * against, so a public signup route must not let a caller name it. The job title went into
+         * `shopRole` above, where it can do no such thing.
+         */
         role: 'admin',
-        subscription: buildSubscription(body.plan),
+        shopRole,
+        ownerId,
+        ownerEmail,
+        /*
+         * Staff get **no subscription of their own** — they ride on the owner's licence. Issuing one
+         * would make a cashier a second paying customer: an extra row on the money screen, an extra
+         * entry in the chase list, and an expiry that could lock out a shop whose owner has paid.
+         */
+        subscription: shopRole === 'owner' ? buildSubscription(body.plan) : null,
         passwordHash: hashPassword(password),
         createdAt: new Date().toISOString(),
       }
@@ -354,7 +488,25 @@ const server = createServer((req, res) => {
     if (route === '/api/v1/admin/accounts' && req.method === 'GET') {
       if (!requireAdmin(req, res, origin)) return
       /* Administrators are not customers, so they are not in the customer list. */
-      const accounts = db.users.filter((u) => u.role !== 'superadmin').map(publicUser)
+      let listed = db.users.filter((u) => u.role !== 'superadmin')
+
+      /*
+       * Two optional filters, so a caller can ask the shape of the question it actually has:
+       *
+       *   `?ownerId=` — one owner's staff. What a "sub ids" screen needs.
+       *   `?shopRole=` — every cashier, say. `owner` gives the paying customers alone, which is the
+       *                  list the money screen and the chase list are really about.
+       *
+       * **Everything is still returned by default.** A console that pages or filters by default
+       * silently under-reports, and an admin list that quietly omits rows is worse than a long one.
+       */
+      const ownerId = url.searchParams.get('ownerId')
+      if (ownerId) listed = listed.filter((u) => u.ownerId === ownerId)
+
+      const shopRole = url.searchParams.get('shopRole')
+      if (shopRole) listed = listed.filter((u) => (u.shopRole ?? DEFAULT_SHOP_ROLE) === shopRole)
+
+      const accounts = listed.map(publicUser)
       sendJson(res, 200, { accounts, total: accounts.length }, origin)
       return
     }
@@ -397,6 +549,79 @@ const server = createServer((req, res) => {
          * through /payments, which extends.
          */
         if (body.plan !== undefined) user.subscription = buildSubscription(String(body.plan))
+
+        /*
+         * ── changing what somebody is ────────────────────────────────────────
+         * Both directions are refused when they would break the two-level shape, and both messages
+         * name the thing to do first. Left unguarded, the first produces a login that is an owner
+         * *and* has an owner, and the second orphans everybody underneath.
+         */
+        if (body.shopRole !== undefined) {
+          const nextRole = readShopRole(body.shopRole)
+          if (!nextRole) {
+            sendError(res, 400, 'VALIDATION_FAILED', 'That is not a role this app knows.', origin, {
+              shopRole: `must be one of ${SHOP_ROLES.join(', ')}`,
+            })
+            return
+          }
+
+          const currentRole = user.shopRole ?? DEFAULT_SHOP_ROLE
+
+          if (nextRole !== 'owner' && currentRole === 'owner') {
+            /* Demoting an owner who still has staff would leave them pointing at a non-owner. */
+            const staff = staffOf(user.id)
+            if (staff.length > 0) {
+              sendError(
+                res,
+                409,
+                'HAS_STAFF',
+                `${user.shopName || user.name || user.email} still has ${staff.length} staff login${staff.length === 1 ? '' : 's'}. Move them to another owner first.`,
+                origin,
+              )
+              return
+            }
+          }
+
+          if (nextRole === 'owner') {
+            /* Promoted to owner: they answer to nobody, and they need a licence of their own. */
+            user.ownerId = null
+            user.ownerEmail = null
+            if (!user.subscription) user.subscription = buildSubscription(body.plan)
+          } else if (currentRole === 'owner') {
+            /*
+             * Owner → staff. They must name an owner in the same request, because a staff account
+             * with nobody above it is the orphan state — able to sign in, attached to no shop.
+             */
+            const resolved = resolveOwner(body.ownerEmail)
+            if (resolved.error) {
+              sendError(res, 400, 'VALIDATION_FAILED', `${resolved.error} A ${nextRole.replace('_', ' ')} must belong to an owner.`, origin, {
+                ownerEmail: 'is required when changing an owner into staff',
+              })
+              return
+            }
+            user.ownerId = resolved.owner.id
+            user.ownerEmail = resolved.owner.email
+            /* Their own licence goes: they are on the owner's now. Refunds are a separate decision. */
+            user.subscription = null
+          }
+          user.shopRole = nextRole
+        }
+
+        /* Moving a staff member to a different owner. */
+        if (body.ownerEmail !== undefined && (user.shopRole ?? DEFAULT_SHOP_ROLE) !== 'owner') {
+          const resolved = resolveOwner(body.ownerEmail)
+          if (resolved.error) {
+            sendError(res, 400, 'VALIDATION_FAILED', resolved.error, origin, { ownerEmail: 'must be an owner' })
+            return
+          }
+          if (resolved.owner.id === user.id) {
+            sendError(res, 400, 'VALIDATION_FAILED', 'An account cannot be its own owner.', origin)
+            return
+          }
+          user.ownerId = resolved.owner.id
+          user.ownerEmail = resolved.owner.email
+        }
+
         save()
         sendJson(res, 200, { account: publicUser(user) }, origin)
         return
@@ -405,6 +630,27 @@ const server = createServer((req, res) => {
       if (req.method === 'DELETE') {
         if (user.role === 'superadmin') {
           sendError(res, 403, 'FORBIDDEN', 'An administrator account cannot be deleted here.', origin)
+          return
+        }
+
+        /*
+         * An owner with staff is refused rather than cascaded, deliberately.
+         *
+         * Cascading would delete other people's logins as a side effect of one click — and the
+         * cashier who can no longer sign in tomorrow morning has no way to find out why. Refusing
+         * makes the consequence a decision: move them, or delete them, and then delete the owner.
+         */
+        const staff = staffOf(user.id)
+        if (staff.length > 0) {
+          sendError(
+            res,
+            409,
+            'HAS_STAFF',
+            `${user.shopName || user.name || user.email} has ${staff.length} staff login${staff.length === 1 ? '' : 's'} (${staff
+              .map((s) => s.email)
+              .join(', ')}). Delete or move them first — they would otherwise be left unable to sign in.`,
+            origin,
+          )
           return
         }
         db.users = db.users.filter((u) => u.id !== user.id)
@@ -446,6 +692,25 @@ const server = createServer((req, res) => {
       const user = db.users.find((u) => u.id === accountId)
       if (!user) {
         sendError(res, 404, 'NOT_FOUND', 'No account with that id.', origin)
+        return
+      }
+
+      /*
+       * Money belongs to the owner, because the licence does. Recording a payment against a cashier
+       * would try to extend a subscription they do not have, and would put their name on a line in
+       * the GST report for a licence somebody else bought.
+       */
+      if ((user.shopRole ?? DEFAULT_SHOP_ROLE) !== 'owner') {
+        const owner = user.ownerId ? db.users.find((u) => u.id === user.ownerId) : null
+        sendError(
+          res,
+          400,
+          'NOT_AN_OWNER',
+          `${user.name || user.email} is a ${(user.shopRole ?? '').replace('_', ' ')}, and staff do not hold a licence. Record this against ${
+            owner ? owner.email : 'their owner'
+          } instead.`,
+          origin,
+        )
         return
       }
 

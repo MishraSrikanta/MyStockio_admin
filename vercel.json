@@ -11,6 +11,7 @@
       "source": "/(.*)",
       "headers": [
         {
+          "comment": "An internal console has no business in a search index.",
           "key": "X-Robots-Tag",
           "value": "noindex, nofollow"
         }

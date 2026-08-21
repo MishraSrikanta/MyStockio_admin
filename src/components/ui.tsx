@@ -146,7 +146,7 @@ export function Modal({
         if (event.key === 'Escape') onClose()
       }}
     >
-      <div className="no-print absolute inset-0 bg-slate-950/70 backdrop-blur-sm" aria-hidden />
+      <div className="no-print absolute inset-0 bg-slate-950/80" aria-hidden />
       <div
         role="dialog"
         aria-modal="true"

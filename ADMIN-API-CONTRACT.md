@@ -74,12 +74,60 @@ Returned by every endpoint here. `subscription` is what the whole console is bui
     "startedAt": "2026-08-20T06:12:44.019Z",
     "expiresAt": "2027-08-20T06:12:44.019Z"
   },
+  "shopRole": "owner",
+  "ownerId": null,
+  "ownerEmail": null,
+  "subscriptionFrom": "own",
   "createdAt": "2026-08-20T06:12:44.019Z",
   "lastPaymentAt": "2026-08-20T09:30:00.000Z",
   "lastPaymentAmount": 3000,
   "paymentCount": 2
 }
 ```
+
+### `role` and `shopRole` are different fields, and must stay that way
+
+This is the one thing in this document that is a **security** requirement rather than a modelling
+preference.
+
+| Field | Means | Set by |
+| --- | --- | --- |
+| `role` | **platform privilege** — `admin`, or `superadmin` for accounts that may open the admin API | the server, **never** a request body |
+| `shopRole` | **a job in a shop** — `owner`, `manager`, `cashier`, `product_manager`, `accountant` | the client, from an allowlist |
+
+`POST api/v1/auth/register` is public. If a job title were read out of the field the authoriser
+trusts, then `{"role":"superadmin"}` in a signup body is a request to become an administrator. So the
+job title goes in `shopRole`, `role` is assigned server-side and never read from input, and
+**`superadmin` is not a valid `shopRole`**. The contract test asserts all three from the outside: a
+signup naming `role` does not get it, that account is refused by `admin/login` with 403, and
+`shopRole: "superadmin"` is a 400.
+
+### Owners hold licences; staff hang off an owner
+
+Two levels, exactly — staff cannot have staff.
+
+- **`shopRole: "owner"`** — the customer. Has `ownerId: null`, holds a subscription, appears in the
+  chase list, and is who payments are recorded against.
+- **anything else** — staff. Has an `ownerId`, holds **no subscription of its own**, and is never
+  chased or charged.
+
+**An absent `shopRole` means `owner`.** Every account that existed before roles did has no such
+field, and reading it any other way turns the entire existing customer base into staff — losing their
+licences and their place in the renewal list in one deploy.
+
+### `subscription` on a staff account is the owner's, resolved live
+
+A staff login signs in on its owner's licence, so the server sends **the owner's** subscription and
+says so with `subscriptionFrom`:
+
+| `subscriptionFrom` | Means |
+| --- | --- |
+| `own` | an owner's own licence |
+| `owner` | a staff account reading its owner's |
+| `none` | a staff account whose owner is missing — a real state, and a fault worth surfacing |
+
+**Resolved on every read, never copied at creation.** A copy drifts the moment the owner renews, and
+the drift is invisible: a cashier locked out in April while the shop is paid up to next March.
 
 **Never include the password hash.** Not here, not on login, not anywhere. A hash that leaves the
 database can be attacked offline at leisure by anyone who captured one response.
@@ -229,6 +277,72 @@ a payment.
 
 ---
 
+### `POST api/v1/auth/register` — creating a login
+
+Two new optional fields, on the route that already exists:
+
+```json
+{ "name": "Rekha", "email": "rekha@shop.com", "password": "…",
+  "shopRole": "cashier", "ownerEmail": "owner@shop.com" }
+```
+
+| Field | Rule |
+| --- | --- |
+| `shopRole` | One of `owner`, `manager`, `cashier`, `product_manager`, `accountant`. **Absent means `owner`.** An unrecognised value is a `400` — never defaulted, since silently turning `cashierr` into an owner hands a counter login somebody's licence. `superadmin` is a `400`. |
+| `ownerEmail` | **Required for every role except `owner`**, ignored for an owner. Resolved to an `ownerId` and stored as one; the email is kept alongside for display only. |
+
+`ownerEmail` is refused with `400` when it is missing, when no account has it, or when it belongs to
+an account that is **not an owner** — that last one is what keeps the hierarchy two levels deep.
+Match it case-insensitively and trimmed.
+
+**A staff signup gets no subscription.** Ignore `plan` for a non-owner rather than issuing a second
+licence: a cashier with their own expiry is a second paying customer on every report, and one who can
+be locked out while their shop is paid up.
+
+**A blank `shopName` on a staff signup inherits the owner's.** "Optional" has to mean *inherited*,
+not *empty* — a cashier row reading "(no name)" beside an owner called Balaji Traders is a hole in
+the screen, not a choice somebody made. A name that *was* given is kept exactly as given, because one
+owner with two branches is a real thing. So a staff account ends up matching its owner on all three
+of the things it does not own: **shop name, plan and expiry.**
+
+### `GET api/v1/admin/accounts` — filters
+
+Everything is still returned by default, owners and staff together, each with `shopRole` and
+`ownerId`, so one request builds the whole tree.
+
+| Query | Returns |
+| --- | --- |
+| `?ownerId={id}` | that owner's staff — the "sub ids" list |
+| `?shopRole=owner` | paying customers alone, which is what the money and chase screens are about |
+
+Do not make either the default. An admin list that quietly omits rows is worse than a long one.
+
+### `PATCH api/v1/admin/accounts/{id}` — moving people around
+
+`shopRole` and `ownerEmail` are accepted, with two refusals that keep the shape intact:
+
+- **Demoting an owner who still has staff → `409 HAS_STAFF`.** They would be left pointing at a
+  non-owner.
+- **Owner → staff requires an `ownerEmail` in the same request → `400`.** A staff account with nobody
+  above it can still sign in and belongs to no shop.
+
+Promotion to owner clears `ownerId` and issues a licence. Owner → staff drops their own licence, since
+they are on the owner's now — refunding it is a separate, deliberate decision.
+
+### `DELETE api/v1/admin/accounts/{id}` — an owner with staff
+
+**`409 HAS_STAFF`, listing the emails in the way.** Not a cascade: deleting other people's logins as a
+side effect of one click leaves a cashier unable to sign in tomorrow morning with no way to find out
+why. Refusing makes it a decision — move them, or delete them, then delete the owner.
+
+### `POST api/v1/admin/payments` — money belongs to the owner
+
+**`400 NOT_AN_OWNER` when `accountId` is a staff login**, naming the owner to use instead. The licence
+is the owner's, so recording a payment against a cashier would try to extend a subscription that does
+not exist and would put their name on a GST line for a licence somebody else bought.
+
+---
+
 ## 6. Error shape
 
 Every failure, nested:
@@ -256,6 +370,12 @@ permissions problem is an afternoon lost to the wrong question.
 - [ ] No password hash in any response
 - [ ] `expiresAt: null` for lifetime — never a far-future date
 - [ ] A refund records without extending the subscription, and never appears as `lastPaymentAmount`
+- [ ] `role` is never read from a request body, and `superadmin` is not a valid `shopRole`
+- [ ] An account with no `shopRole` behaves exactly as an owner did before roles existed
+- [ ] Staff hold no subscription of their own and read their owner's live, with `subscriptionFrom`
+- [ ] A staff signup with no `shopName` inherits the owner's; one that is given is kept as given
+- [ ] Staff cannot own staff; deleting or demoting an owner with staff is a 409, not a cascade
+- [ ] A payment against a staff account is a 400
 - [ ] Subscription dates computed server-side; `expiresAt` never accepted from a client
 - [ ] Renewal extends from the later of (current expiry, today); `startedAt` is not reset
 - [ ] `PATCH { plan }` re-issues from today, unlike a payment

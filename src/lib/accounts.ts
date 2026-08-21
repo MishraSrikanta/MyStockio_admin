@@ -6,6 +6,7 @@
  * should not depend on a component re-rendering.
  */
 
+import { isStaff } from './roles'
 import {
   type AdminAccount,
   type SubscriptionState,
@@ -15,7 +16,7 @@ import {
   subscriptionState,
 } from './subscription'
 
-export type AccountFilter = 'all' | 'active' | 'expiring' | 'expired' | 'lifetime' | 'needs-renewal'
+export type AccountFilter = 'all' | 'active' | 'expiring' | 'expired' | 'lifetime' | 'needs-renewal' | 'staff'
 
 export const FILTER_LABEL: Record<AccountFilter, string> = {
   all: 'All accounts',
@@ -24,6 +25,7 @@ export const FILTER_LABEL: Record<AccountFilter, string> = {
   expired: 'Expired',
   active: 'Active',
   lifetime: 'Lifetime',
+  staff: 'Staff logins',
 }
 
 /**
@@ -53,6 +55,7 @@ export function matchesFilter(
   filter: AccountFilter,
   now: Date = new Date(),
 ): boolean {
+  if (filter === 'staff') return isStaff(account)
   if (filter === 'all') return true
   if (filter === 'needs-renewal') return needsRenewal(account, now)
   if (filter === 'lifetime') return isLifetime(account)
@@ -109,7 +112,21 @@ export function sortAccounts(
   return list.sort(byUrgency(now))
 }
 
-/** Search + filter + sort, in the one call a screen actually needs. */
+/**
+ * Search + filter + sort, in the one call a screen actually needs.
+ *
+ * ── Which rows come back, and why staff are not among them ─────────────────────
+ * **Owners, by default.** A staff login is not a customer: it holds no licence, is never chased, and
+ * listing one beside its owner would count one shop twice on a screen whose whole purpose is "who do
+ * I need to ring". Staff belong *under* their owner, and the table nests them there.
+ *
+ * Two exceptions, both because the alternative is a row nobody can reach:
+ *
+ *   · **A typed query searches everybody.** Somebody looking up `rekha@shop.com` has a cashier in
+ *     mind, and "no results" for an account that plainly exists is the kind of answer that gets a
+ *     tool abandoned.
+ *   · **The Staff filter lists staff alone.** The direct answer to "who has logins".
+ */
 export function visibleAccounts(
   accounts: AdminAccount[] | undefined,
   options: { query?: string; filter?: AccountFilter; sort?: SortKey; now?: Date } = {},
@@ -117,9 +134,16 @@ export function visibleAccounts(
   const now = options.now ?? new Date()
   const filter = options.filter ?? 'all'
   const query = options.query ?? ''
+  const searching = query.trim() !== ''
 
   return sortAccounts(
-    (accounts ?? []).filter((account) => matchesFilter(account, filter, now) && matchesQuery(account, query)),
+    (accounts ?? []).filter((account) => {
+      if (!matchesFilter(account, filter, now)) return false
+      if (!matchesQuery(account, query)) return false
+      /* Staff are nested under their owner unless asked for by name, or by the Staff filter. */
+      if (isStaff(account) && filter !== 'staff' && !searching) return false
+      return true
+    }),
     options.sort ?? 'urgency',
     now,
   )
@@ -136,6 +160,8 @@ export interface AccountSummary {
   needsRenewal: number
   /** How many of those cannot be messaged, because there is no usable phone number. */
   unreachable: number
+  /** Staff logins, counted apart — they are not customers and hold no licence. */
+  staff: number
 }
 
 /**
@@ -159,9 +185,23 @@ export function summarise(
     unknown: 0,
     needsRenewal: 0,
     unreachable: 0,
+    staff: 0,
   }
 
   for (const account of accounts ?? []) {
+    /*
+     * **Staff are counted apart from every other figure here.**
+     *
+     * They hold no licence of their own — the server sends them their owner's — so folding them in
+     * would count one shop as many: an owner and three staff would read as four customers, four
+     * active licences, and four rows to chase when the owner renews. Every counter on this screen is
+     * about paying customers, so every counter is about owners.
+     */
+    if (isStaff(account)) {
+      summary.staff += 1
+      continue
+    }
+
     summary.total += 1
     const state = subscriptionState(account, now)
     if (state === 'lifetime') summary.lifetime += 1

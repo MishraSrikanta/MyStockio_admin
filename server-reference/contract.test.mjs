@@ -367,6 +367,196 @@ try {
   )
 
   /* ── shapes ───────────────────────────────────────────────────────────── */
+
+  /* ── roles and the owner they hang from ────────────────────────────────── */
+  /*
+   * The shape being asserted: an owner holds the licence, staff hang off an owner and hold none, and
+   * the two fields never cross. `role` is platform privilege — it decides who may call the admin API
+   * — and `shopRole` is a job title. Keeping them apart is what stops a public signup route from
+   * being a way to ask for `superadmin`.
+   */
+  console.log('\nroles')
+
+  const ownerSignup = await call('POST', 'api/v1/auth/register', {
+    body: { name: 'Family Owner', email: 'famowner@shop.com', password: 'Passw0rd!', shopName: 'Family Stores', plan: '1year' },
+  })
+  const familyOwnerId = ownerSignup.body?.account?.id
+  check('an account with no shopRole is created as an owner', ownerSignup.body?.account?.shopRole === 'owner', String(ownerSignup.body?.account?.shopRole))
+  check('...and gets a licence of its own', !!ownerSignup.body?.account?.subscription?.expiresAt)
+  check('...and answers to nobody', ownerSignup.body?.account?.ownerId === null)
+
+  const cashier = await call('POST', 'api/v1/auth/register', {
+    body: {
+      name: 'Rekha', email: 'rekha@shop.com', password: 'Passw0rd!',
+      shopRole: 'cashier', ownerEmail: 'famowner@shop.com',
+    },
+  })
+  const cashierId = cashier.body?.account?.id
+  check('a cashier is created', cashier.status === 201, String(cashier.status))
+  check('...with the role it asked for', cashier.body?.account?.shopRole === 'cashier')
+  check('...pointed at the owner by id', cashier.body?.account?.ownerId === familyOwnerId)
+  check('...keeping the email for display', cashier.body?.account?.ownerEmail === 'famowner@shop.com')
+  /*
+   * The load-bearing one: staff hold NO licence of their own. Issuing one would make a cashier a
+   * second paying customer — an extra row on the money screen and an extra name in the chase list.
+   */
+  check('...reading the owner licence, not one of its own', cashier.body?.account?.subscriptionFrom === 'owner', String(cashier.body?.account?.subscriptionFrom))
+  check('...and that licence is the owner exact expiry', cashier.body?.account?.subscription?.expiresAt === ownerSignup.body?.account?.subscription?.expiresAt)
+
+  /* Case and spacing on the owner email must not decide whether a login can be created. */
+  const spaced = await call('POST', 'api/v1/auth/register', {
+    body: { name: 'Anil', email: 'anil@shop.com', password: 'Passw0rd!', shopRole: 'product_manager', ownerEmail: '  FAMOWNER@shop.com ' },
+  })
+  check('an owner email is matched case-insensitively', spaced.body?.account?.ownerId === familyOwnerId, String(spaced.status))
+
+  /*
+   * The shop name is inherited when it is left out, because a staff login works in the owner's shop.
+   * "Optional" has to mean inherited rather than empty — a cashier row reading "(no name)" next to an
+   * owner called Family Stores is a hole in the screen, not a choice somebody made.
+   */
+  check(
+    'a staff signup with no shop name inherits the owner’s',
+    spaced.body?.account?.shopName === 'Family Stores',
+    String(spaced.body?.account?.shopName),
+  )
+  const ownBranch = await call('POST', 'api/v1/auth/register', {
+    body: {
+      name: 'Branch Cashier', email: 'branch@shop.com', password: 'Passw0rd!',
+      shopRole: 'cashier', ownerEmail: 'famowner@shop.com', shopName: 'Family Stores — Cuttack',
+    },
+  })
+  check(
+    '...but a shop name that was given is kept',
+    ownBranch.body?.account?.shopName === 'Family Stores — Cuttack',
+    String(ownBranch.body?.account?.shopName),
+  )
+  check(
+    '...and an owner with no shop name leaves it blank rather than inventing one',
+    typeof spaced.body?.account?.shopName === 'string',
+  )
+
+  console.log('\nrefusing a broken hierarchy')
+
+  check(
+    'staff without an owner email is refused',
+    (await call('POST', 'api/v1/auth/register', { body: { name: 'X', email: 'x1@shop.com', password: 'Passw0rd!', shopRole: 'cashier' } })).status === 400,
+  )
+  check(
+    'an owner email nobody has is refused',
+    (await call('POST', 'api/v1/auth/register', { body: { name: 'X', email: 'x2@shop.com', password: 'Passw0rd!', shopRole: 'cashier', ownerEmail: 'ghost@shop.com' } })).status === 400,
+  )
+  /* Two levels, exactly: a cashier cannot be somebody's owner. */
+  const nested = await call('POST', 'api/v1/auth/register', {
+    body: { name: 'X', email: 'x3@shop.com', password: 'Passw0rd!', shopRole: 'cashier', ownerEmail: 'rekha@shop.com' },
+  })
+  check('a staff member cannot be named as the owner', nested.status === 400, String(nested.status))
+  check('...and says so in words', String(nested.body?.error?.message ?? '').includes('not an owner'), nested.body?.error?.message)
+
+  const badRole = await call('POST', 'api/v1/auth/register', {
+    body: { name: 'X', email: 'x4@shop.com', password: 'Passw0rd!', shopRole: 'emperor', ownerEmail: 'famowner@shop.com' },
+  })
+  check('an unknown role is refused, not defaulted', badRole.status === 400, String(badRole.status))
+
+  /*
+   * The security assertion this whole design exists for. `role` is what the authoriser trusts, and
+   * `auth/register` is public — so a signup body naming it must not be able to grant itself the
+   * admin API.
+   */
+  const escalate = await call('POST', 'api/v1/auth/register', {
+    body: { name: 'Sneaky', email: 'sneaky@shop.com', password: 'Passw0rd!', role: 'superadmin', shopRole: 'owner' },
+  })
+  check('a signup cannot name itself superadmin', escalate.body?.account?.role !== 'superadmin', String(escalate.body?.account?.role))
+  const sneakyLogin = await call('POST', 'api/v1/admin/login', { body: { email: 'sneaky@shop.com', password: 'Passw0rd!' } })
+  check('...and that account cannot even sign in to the admin API', sneakyLogin.status === 403, String(sneakyLogin.status))
+  check(
+    '...nor is superadmin accepted as a shopRole',
+    (await call('POST', 'api/v1/auth/register', { body: { name: 'X', email: 'x5@shop.com', password: 'Passw0rd!', shopRole: 'superadmin' } })).status === 400,
+  )
+
+  console.log('\nlisting a family')
+
+  const family = await call('GET', `api/v1/admin/accounts?ownerId=${familyOwnerId}`, { token: adminToken })
+  /* Three now: the product manager, the one that inherited the shop name, and the branch cashier. */
+  check('an owner staff can be listed', family.body?.total === 3, String(family.body?.total))
+  check('...and they are all staff', (family.body?.accounts ?? []).every((a) => a.shopRole !== 'owner'))
+
+  const justOwners = await call('GET', 'api/v1/admin/accounts?shopRole=owner', { token: adminToken })
+  check('owners alone can be listed', (justOwners.body?.accounts ?? []).every((a) => a.shopRole === 'owner'))
+  check('...and the staff are not among them', !(justOwners.body?.accounts ?? []).some((a) => a.email === 'rekha@shop.com'))
+
+  const everyone = await call('GET', 'api/v1/admin/accounts', { token: adminToken })
+  check('the unfiltered list still returns everybody', (everyone.body?.accounts ?? []).some((a) => a.email === 'rekha@shop.com'))
+
+  console.log('\nmoney belongs to the owner')
+
+  const payStaff = await call('POST', 'api/v1/admin/payments', {
+    token: adminToken,
+    body: { accountId: cashierId, amount: 3000, plan: '1year' },
+  })
+  check('a payment against staff is refused', payStaff.status === 400, String(payStaff.status))
+  check('...naming the owner to use instead', String(payStaff.body?.error?.message ?? '').includes('famowner@shop.com'), payStaff.body?.error?.message)
+
+  /* Renewing the owner must move the staff licence with it — it is the same licence. */
+  const renewed = await call('POST', 'api/v1/admin/payments', {
+    token: adminToken,
+    body: { accountId: familyOwnerId, amount: 3000, plan: '1year' },
+  })
+  const afterRenewal = await call('GET', `api/v1/admin/accounts/${cashierId}`, { token: adminToken })
+  check(
+    'renewing the owner extends the staff licence too',
+    afterRenewal.body?.account?.subscription?.expiresAt === renewed.body?.account?.subscription?.expiresAt,
+    afterRenewal.body?.account?.subscription?.expiresAt,
+  )
+
+  console.log('\nchanging and removing')
+
+  /* Deleting an owner who still has staff is refused rather than cascaded. */
+  const blocked = await call('DELETE', `api/v1/admin/accounts/${familyOwnerId}`, { token: adminToken })
+  check('an owner with staff cannot be deleted', blocked.status === 409, String(blocked.status))
+  check('...and the message lists who is in the way', String(blocked.body?.error?.message ?? '').includes('rekha@shop.com'), blocked.body?.error?.message)
+  check('...and the owner is still there', (await call('GET', `api/v1/admin/accounts/${familyOwnerId}`, { token: adminToken })).status === 200)
+
+  /* Demoting an owner who still has staff is refused for the same reason. */
+  check(
+    'an owner with staff cannot be demoted to staff',
+    (await call('PATCH', `api/v1/admin/accounts/${familyOwnerId}`, { token: adminToken, body: { shopRole: 'cashier', ownerEmail: 'famowner@shop.com' } })).status === 409,
+  )
+
+  /*
+   * Moving a staff member to another owner.
+   *
+   * The destination owner is created here rather than borrowed from an earlier section — those get
+   * deleted by the deletion tests, and a suite whose assertions depend on the order of unrelated
+   * blocks fails for reasons that have nothing to do with the thing under test.
+   */
+  const secondOwner = await call('POST', 'api/v1/auth/register', {
+    body: { name: 'Second Owner', email: 'second@shop.com', password: 'Passw0rd!', shopName: 'Second Stores', plan: '1year' },
+  })
+  const moved = await call('PATCH', `api/v1/admin/accounts/${cashierId}`, {
+    token: adminToken,
+    body: { ownerEmail: 'second@shop.com' },
+  })
+  check('a staff member can be moved to another owner', moved.body?.account?.ownerEmail === 'second@shop.com', String(moved.status))
+  check('...and points at the new owner id', moved.body?.account?.ownerId === secondOwner.body?.account?.id)
+  check('...and now reads that owner licence', moved.body?.account?.subscriptionFrom === 'owner')
+
+  /* Promoting a staff member to owner: they answer to nobody and get their own licence. */
+  const promoted = await call('PATCH', `api/v1/admin/accounts/${spaced.body?.account?.id}`, {
+    token: adminToken,
+    body: { shopRole: 'owner', plan: '1year' },
+  })
+  check('a staff member can be promoted to owner', promoted.body?.account?.shopRole === 'owner', String(promoted.status))
+  check('...losing the owner above them', promoted.body?.account?.ownerId === null)
+  check('...and gaining a licence of their own', promoted.body?.account?.subscriptionFrom === 'own' && !!promoted.body?.account?.subscription?.expiresAt)
+
+  /* With every staff member gone, the owner can be deleted. Each one, not just the first. */
+  await call('DELETE', `api/v1/admin/accounts/${ownBranch.body?.account?.id}`, { token: adminToken })
+  await call('DELETE', `api/v1/admin/accounts/${cashierId}`, { token: adminToken })
+  check(
+    'with no staff left, the owner deletes cleanly',
+    (await call('DELETE', `api/v1/admin/accounts/${familyOwnerId}`, { token: adminToken })).status === 200,
+  )
+
   console.log('\nerror shapes')
   const bad = await call('POST', 'api/v1/admin/login', { body: {} })
   check('errors are nested as { error: { code, message } }', typeof bad.body?.error?.message === 'string')

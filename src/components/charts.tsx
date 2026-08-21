@@ -638,7 +638,7 @@ export function StackedBar({
  */
 function Tooltip({ children }: { children: ReactNode }) {
   return (
-    <div className="pointer-events-none absolute right-0 top-0 flex flex-col gap-0.5 rounded-xl border border-white/10 bg-slate-950/90 px-2.5 py-1.5 text-[12px] text-slate-300 shadow-lg backdrop-blur">
+    <div className="pointer-events-none absolute right-0 top-0 flex flex-col gap-0.5 rounded-xl border border-white/10 bg-slate-950 px-2.5 py-1.5 text-[12px] text-slate-300 shadow-lg">
       {children}
     </div>
   )
