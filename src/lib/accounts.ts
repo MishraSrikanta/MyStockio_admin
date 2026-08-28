@@ -7,6 +7,7 @@
  */
 
 import { isStaff } from './roles'
+import { softwareOf } from './software'
 import {
   type AdminAccount,
   type SubscriptionState,
@@ -16,7 +17,16 @@ import {
   subscriptionState,
 } from './subscription'
 
-export type AccountFilter = 'all' | 'active' | 'expiring' | 'expired' | 'lifetime' | 'needs-renewal' | 'staff'
+export type AccountFilter =
+  | 'all'
+  | 'active'
+  | 'expiring'
+  | 'expired'
+  | 'lifetime'
+  | 'needs-renewal'
+  | 'staff'
+  | 'mystockio'
+  | 'mystockio_mini'
 
 export const FILTER_LABEL: Record<AccountFilter, string> = {
   all: 'All accounts',
@@ -26,6 +36,8 @@ export const FILTER_LABEL: Record<AccountFilter, string> = {
   active: 'Active',
   lifetime: 'Lifetime',
   staff: 'Staff logins',
+  mystockio: 'On MyStockio',
+  mystockio_mini: 'On MyStockio Mini',
 }
 
 /**
@@ -56,6 +68,11 @@ export function matchesFilter(
   now: Date = new Date(),
 ): boolean {
   if (filter === 'staff') return isStaff(account)
+  /*
+   * By edition. Staff match on their owner's, because the server sends them the owner's value — so
+   * asking for every Mini login returns the shop *and* its counter, which is what was asked.
+   */
+  if (filter === 'mystockio' || filter === 'mystockio_mini') return softwareOf(account) === filter
   if (filter === 'all') return true
   if (filter === 'needs-renewal') return needsRenewal(account, now)
   if (filter === 'lifetime') return isLifetime(account)

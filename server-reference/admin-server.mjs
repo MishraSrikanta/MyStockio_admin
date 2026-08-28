@@ -129,6 +129,45 @@ function buildSubscription(plan, from = new Date()) {
 const SHOP_ROLES = ['owner', 'manager', 'cashier', 'product_manager', 'accountant']
 const DEFAULT_SHOP_ROLE = 'owner'
 
+/* ───────────────────────────────────────────────────────── the software ── */
+
+/**
+ * Which product a customer is on. Must match `SoftwareType` in `src/lib/software.ts`.
+ *
+ * ── Why this defaults rather than being required ────────────────────────────────
+ * The admin console makes it **mandatory on its own form** — which edition a shop bought is a
+ * commercial fact nobody should guess. But this route, `api/v1/auth/register`, is the *shared* public
+ * signup that MyStockio's own form uses, and rejecting a body without `softwareType` would break
+ * that form the moment this is deployed.
+ *
+ * So: **an absent value defaults to `mystockio`, an unrecognised one is refused.** The default is
+ * the honest reading rather than a shortcut — every account older than this field is on the full
+ * product, since Mini came later. Silently accepting `mystockio_minii` would be the real fault, and
+ * that is a 400.
+ */
+const SOFTWARE_TYPES = ['mystockio', 'mystockio_mini']
+const DEFAULT_SOFTWARE = 'mystockio'
+
+function readSoftwareType(value) {
+  if (value === undefined || value === null || value === '') return DEFAULT_SOFTWARE
+  const type = String(value)
+  return SOFTWARE_TYPES.includes(type) ? type : null
+}
+
+/**
+ * The edition an account is on, resolving a staff member's to their owner's.
+ *
+ * Read live, exactly like the subscription, and for the same reason: a copy taken at creation drifts
+ * the moment the shop upgrades, and the drift is invisible until a cashier is on the wrong edition
+ * from the till beside them.
+ */
+function softwareFor(user) {
+  const role = user.shopRole ?? DEFAULT_SHOP_ROLE
+  if (role === 'owner') return user.softwareType ?? DEFAULT_SOFTWARE
+  const owner = user.ownerId ? db.users.find((u) => u.id === user.ownerId) : null
+  return owner ? owner.softwareType ?? DEFAULT_SOFTWARE : DEFAULT_SOFTWARE
+}
+
 /**
  * The shop role from a request body, defaulting to owner.
  *
@@ -229,6 +268,8 @@ function publicUser(user) {
     /* Platform privilege. Not a job title — see SHOP_ROLES. */
     role: user.role,
     shopRole: user.shopRole ?? 'owner',
+    /* An owner's own; a staff member's is their owner's, read live. */
+    softwareType: softwareFor(user),
     ownerId: user.ownerId ?? null,
     ownerEmail: user.ownerEmail ?? null,
     /**
@@ -418,6 +459,14 @@ const server = createServer((req, res) => {
         return
       }
 
+      const softwareType = readSoftwareType(body.softwareType)
+      if (!softwareType) {
+        sendError(res, 400, 'VALIDATION_FAILED', 'That is not an edition this app knows.', origin, {
+          softwareType: `must be one of ${SOFTWARE_TYPES.join(', ')}`,
+        })
+        return
+      }
+
       const shopRole = readShopRole(body.shopRole)
       if (!shopRole) {
         sendError(res, 400, 'VALIDATION_FAILED', 'That is not a role this app knows.', origin, {
@@ -474,6 +523,11 @@ const server = createServer((req, res) => {
          * would make a cashier a second paying customer: an extra row on the money screen, an extra
          * entry in the chase list, and an expiry that could lock out a shop whose owner has paid.
          */
+        /*
+         * Stored on the owner alone. A staff account reads the owner's through `softwareFor`, so
+         * there is no second copy to fall out of step when a shop upgrades from Mini.
+         */
+        softwareType: shopRole === 'owner' ? softwareType : null,
         subscription: shopRole === 'owner' ? buildSubscription(body.plan) : null,
         passwordHash: hashPassword(password),
         createdAt: new Date().toISOString(),
@@ -551,12 +605,57 @@ const server = createServer((req, res) => {
         if (body.plan !== undefined) user.subscription = buildSubscription(String(body.plan))
 
         /*
+         * ── moving a customer between editions ───────────────────────────────
+         * Set on the **owner**, and their staff follow without being touched, because a staff account
+         * reads the owner's rather than storing one.
+         *
+         * Refused on a staff account rather than quietly accepted. Storing an edition there would
+         * create a value that is read by nothing — a switch that appears to work, changes what the
+         * database says, and changes nothing about what that login actually runs.
+         */
+        if (body.softwareType !== undefined) {
+          const nextSoftware = readSoftwareType(body.softwareType)
+          if (!nextSoftware) {
+            sendError(res, 400, 'VALIDATION_FAILED', 'That is not an edition this app knows.', origin, {
+              softwareType: `must be one of ${SOFTWARE_TYPES.join(', ')}`,
+            })
+            return
+          }
+          /*
+           * Judged on what they will be *after* this request, not what they are now — otherwise
+           * "promote to owner and put them on Mini" in one call is refused for being staff, which is
+           * true only until the same request finishes.
+           */
+          const willBeOwner =
+            body.shopRole !== undefined
+              ? readShopRole(body.shopRole) === 'owner'
+              : (user.shopRole ?? DEFAULT_SHOP_ROLE) === 'owner'
+
+          if (!willBeOwner) {
+            const theirOwner = user.ownerId ? db.users.find((u) => u.id === user.ownerId) : null
+            sendError(
+              res,
+              400,
+              'NOT_AN_OWNER',
+              `${user.name || user.email} is a ${(user.shopRole ?? '').replace('_', ' ')} and uses whichever edition the shop is on. Change it on ${
+                theirOwner ? theirOwner.email : 'their owner'
+              } and every login under them follows.`,
+              origin,
+            )
+            return
+          }
+          user.softwareType = nextSoftware
+        }
+
+        /*
          * ── changing what somebody is ────────────────────────────────────────
          * Both directions are refused when they would break the two-level shape, and both messages
          * name the thing to do first. Left unguarded, the first produces a login that is an owner
          * *and* has an owner, and the second orphans everybody underneath.
          */
         if (body.shopRole !== undefined) {
+          /* Read before anything is mutated: after the switch, `softwareFor` would answer differently. */
+          const previousSoftware = softwareFor(user)
           const nextRole = readShopRole(body.shopRole)
           if (!nextRole) {
             sendError(res, 400, 'VALIDATION_FAILED', 'That is not a role this app knows.', origin, {
@@ -587,6 +686,16 @@ const server = createServer((req, res) => {
             user.ownerId = null
             user.ownerEmail = null
             if (!user.subscription) user.subscription = buildSubscription(body.plan)
+            /*
+             * They were reading their old owner's edition; now they need one of their own, and the
+             * edition they were *already using* is the only defensible starting point — anything else
+             * silently moves a working shop to a different product.
+             *
+             * `readSoftwareType` defaults an absent value to the full product, so it cannot be used
+             * to detect "not asked for" — hence the explicit `undefined` check. Getting that wrong is
+             * what put a Mini shop on MyStockio the first time this was written.
+             */
+            if (!user.softwareType) user.softwareType = previousSoftware
           } else if (currentRole === 'owner') {
             /*
              * Owner → staff. They must name an owner in the same request, because a staff account
@@ -601,8 +710,9 @@ const server = createServer((req, res) => {
             }
             user.ownerId = resolved.owner.id
             user.ownerEmail = resolved.owner.email
-            /* Their own licence goes: they are on the owner's now. Refunds are a separate decision. */
+            /* Their own licence and edition go: both are the owner's now. Refunds stay a separate decision. */
             user.subscription = null
+            user.softwareType = null
           }
           user.shopRole = nextRole
         }

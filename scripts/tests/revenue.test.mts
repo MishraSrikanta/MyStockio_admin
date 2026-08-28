@@ -24,6 +24,7 @@ import {
   lastMonths,
   monthLabel,
   monthsIn,
+  normalisePayment,
   type Payment,
   profitFor,
   round2,
@@ -31,6 +32,7 @@ import {
   splitGst,
   toCsv,
   totals,
+  undatedCount,
 } from '../../src/lib/revenue'
 
 let failures = 0
@@ -125,6 +127,72 @@ check('a net loss stays negative', negative.net === -2000, String(negative.net))
 check('...and so does the tax on it', negative.gst < 0 && negative.taxable < 0, `${negative.taxable} / ${negative.gst}`)
 
 check('an empty ledger is all zeroes', totals([]).net === 0 && totals([]).gst === 0)
+
+/* ══════════════════════════════ reading what the server actually sends ══ */
+
+console.log('\nnormalising a row from the server')
+
+/*
+ * The exact shape the live backend returns, copied from a real response. It dates its rows
+ * `createdAt`; this app reads `at`. That one field name was the whole bug: `new Date(undefined)` is
+ * invalid, every row fell outside every period, and ₹17,000 of real payments displayed as ₹0 with
+ * no error at all.
+ */
+const fromServer = normalisePayment({
+  id: '6a8dd1d378f90bae51d36df4',
+  accountId: '6a846e121c0928d8a18bc7c9',
+  amount: 12000,
+  type: 'payment',
+  plan: 'lifetime',
+  method: 'upi',
+  reference: '',
+  note: '',
+  recordedBy: '6a86ed1a4c40c9c20399b372',
+  recordedByEmail: 'admin@shop.com',
+  createdAt: '2026-08-25T17:33:07.050Z',
+})
+check('a real row is read', fromServer !== null)
+check('...taking the date from createdAt', fromServer?.at === '2026-08-25T17:33:07.050Z', fromServer?.at)
+check('...with the amount intact', fromServer?.amount === 12000)
+check('...and the author preferred as the email', fromServer?.recordedBy === 'admin@shop.com', fromServer?.recordedBy)
+
+/* The bug in one assertion: a row dated only by `createdAt` must land inside a period. */
+const period = { from: new Date(2026, 7, 1), to: new Date(2026, 7, 31, 23, 59, 59), label: 'Aug 26' }
+check('...and it falls INSIDE the period it belongs to', inPeriod([fromServer!], period).length === 1)
+check('...so it reaches the total', totals(inPeriod([fromServer!], period)).net === 12000, String(totals(inPeriod([fromServer!], period)).net))
+
+/* Every spelling of "when", so one more backend does not cost another silent zero. */
+for (const field of ['at', 'createdAt', 'paidAt', 'date', 'timestamp', 'created_at']) {
+  const row = normalisePayment({ id: 'x', accountId: 'a', amount: 100, [field]: '2026-08-10T00:00:00.000Z' })
+  check(`\`${field}\` is read as the date`, row?.at === '2026-08-10T00:00:00.000Z', row?.at)
+}
+check('`at` wins when both are present', normalisePayment({ id: 'x', accountId: 'a', amount: 1, at: '2026-01-01T00:00:00.000Z', createdAt: '2026-09-09T00:00:00.000Z' })?.at === '2026-01-01T00:00:00.000Z')
+check('an epoch number is a date too', normalisePayment({ id: 'x', accountId: 'a', amount: 1, createdAt: Date.UTC(2026, 0, 2) })?.at === '2026-01-02T00:00:00.000Z')
+
+/* Mongo shapes, since that is what is on the other end. */
+check('`_id` is read as the id', normalisePayment({ _id: 'abc', accountId: 'a', amount: 1, createdAt: '2026-08-01T00:00:00.000Z' })?.id === 'abc')
+check('a quoted amount is a number', normalisePayment({ id: 'x', accountId: 'a', amount: '2500.50', createdAt: '2026-08-01T00:00:00.000Z' })?.amount === 2500.5)
+check('a decimal wrapper is a number', normalisePayment({ id: 'x', accountId: 'a', amount: { $numberDecimal: '750' }, createdAt: '2026-08-01T00:00:00.000Z' })?.amount === 750)
+
+/* A refund stays a refund; anything else — including nothing — is a payment. */
+check('a refund keeps its direction', normalisePayment({ id: 'x', accountId: 'a', amount: 1, type: 'refund', createdAt: '2026-08-01T00:00:00.000Z' })?.type === 'refund')
+check('a row with no type is a payment', normalisePayment({ id: 'x', accountId: 'a', amount: 1, createdAt: '2026-08-01T00:00:00.000Z' })?.type === 'payment')
+
+/* Rubbish in must not become money out. */
+check('a row with no amount is dropped', normalisePayment({ id: 'x', accountId: 'a', createdAt: '2026-08-01T00:00:00.000Z' }) === null)
+check('a row with a nonsense amount is dropped', normalisePayment({ id: 'x', accountId: 'a', amount: 'lots', createdAt: '2026-08-01T00:00:00.000Z' }) === null)
+check('a non-object is dropped', normalisePayment('nope') === null && normalisePayment(null) === null)
+
+/*
+ * A row with no readable date is KEPT, not dropped — money that exists must not disappear because a
+ * timestamp was unreadable. It cannot sit in a month, so it is counted separately and said out loud.
+ */
+const undated = normalisePayment({ id: 'x', accountId: 'a', amount: 999 })
+check('a row with no date survives', undated !== null && undated.amount === 999)
+check('...with an empty date rather than an invalid one', undated?.at === '')
+check('...and is counted so a screen can say so', undatedCount([undated!, fromServer!]) === 1)
+check('...and it still reaches an unfiltered total', totals([undated!]).net === 999)
+check('...but no period claims it', inPeriod([undated!], period).length === 0)
 
 /* ══════════════════════════════════════════════════ months and periods ══ */
 

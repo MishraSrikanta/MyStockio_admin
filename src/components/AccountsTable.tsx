@@ -37,6 +37,7 @@
 import { memo, useCallback, useMemo, useState } from 'react'
 import { formatAmount, normalisePhone, reminderMessage, toneFor, whatsappLink } from '@/lib/outreach'
 import { isStaff, nameOf, possessive, ROLE_LABEL, ROLES, roleOf, Role } from '@/lib/roles'
+import { SOFTWARE_LABEL, SoftwareType, softwareOf } from '@/lib/software'
 import {
   type AdminAccount,
   describeTimeLeft,
@@ -293,7 +294,17 @@ const OwnerRow = memo(function OwnerRow({
           <span className="text-slate-600">—</span>
         )}
       </td>
-      <td className="td">{planLabel(account.subscription?.plan)}</td>
+      <td className="td">
+        {planLabel(account.subscription?.plan)}
+        {/* The edition beside the plan: the two together are what the customer is actually paying for. */}
+        <span
+          className={`mt-0.5 block text-[11px] font-semibold ${
+            softwareOf(account) === SoftwareType.Mini ? 'text-amber-300' : 'text-slate-500'
+          }`}
+        >
+          {SOFTWARE_LABEL[softwareOf(account)]}
+        </span>
+      </td>
       <td className="td">
         <Badge tone={STATE_TONE[state]}>{describeTimeLeft(account)}</Badge>
       </td>

@@ -13,6 +13,14 @@ import {
   ROLES,
   shopNameFor,
 } from '@/lib/roles'
+import {
+  checkSoftwareChoice,
+  SOFTWARE_LABEL,
+  SOFTWARE_NOTE,
+  SOFTWARE_TYPES,
+  softwareLabelOf,
+  type SoftwareType,
+} from '@/lib/software'
 import type { AdminAccount } from '@/lib/subscription'
 import { Button, Input, Modal, Notice } from './ui'
 
@@ -79,6 +87,12 @@ export function CreateAccountModal({
   })
   const [role, setRole] = useState<Role>(staffFor ? Role.Cashier : Role.Owner)
   const [plan, setPlan] = useState<string>(DEFAULT_PLAN)
+  /*
+   * **Deliberately empty to start.** A plan has a sensible default; an edition does not — which
+   * product a shop bought is a commercial fact, and pre-selecting one means the form quietly answers
+   * a question nobody asked. So it starts unset and the form refuses to submit until it is chosen.
+   */
+  const [software, setSoftware] = useState<SoftwareType | ''>('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
@@ -92,6 +106,14 @@ export function CreateAccountModal({
   const [shopNameEdited, setShopNameEdited] = useState(false)
 
   const staff = needsOwner(role)
+  /** The owner currently named, so the form can say what this login will inherit. */
+  const pickedOwner = useMemo(
+    () =>
+      accounts.find(
+        (account) => account.email.trim().toLowerCase() === form.ownerEmail.trim().toLowerCase(),
+      ) ?? null,
+    [accounts, form.ownerEmail],
+  )
   /** Only owners can be picked as an owner — two levels, so staff are not offered. */
   const pickableOwners = useMemo(() => ownersOf(accounts), [accounts])
 
@@ -137,6 +159,15 @@ export function CreateAccountModal({
     if (!form.password) errors.password = 'Set a password you can read back to them.'
     if (!form.developerCode.trim()) errors.developerCode = 'The backend expects an invite code.'
 
+    /*
+     * Mandatory for an owner only. Staff take the owner's edition, so asking would be asking
+     * somebody to answer for a second time on behalf of a shop that has already answered.
+     */
+    if (!staff) {
+      const wrong = checkSoftwareChoice(software)
+      if (wrong) errors.softwareType = wrong
+    }
+
     /* The role rule, from the same function the tests assert against. */
     const problem = checkRoleChoice({ role, ownerEmail: form.ownerEmail }, accounts)
     if (problem) errors[problem.field] = problem.message
@@ -159,8 +190,8 @@ export function CreateAccountModal({
         password: form.password,
         phone: form.phone,
         shopName: form.shopName,
-        /* A plan for an owner only — staff are on their owner's licence. */
-        ...(staff ? {} : { plan }),
+        /* A plan and an edition for an owner only — staff are on their owner's. */
+        ...(staff ? {} : { plan, softwareType: software }),
         shopRole: role,
         ...(staff ? { ownerEmail: form.ownerEmail.trim() } : {}),
         developerCode: form.developerCode.trim() || undefined,
@@ -262,9 +293,14 @@ export function CreateAccountModal({
               }
             />
             <p className="mt-1.5 text-[11.5px] leading-relaxed text-slate-400">
-              This login takes the owner’s <strong className="font-semibold text-slate-300">shop name,
-              plan and expiry</strong>. The licence stays the owner’s — read live, so it follows every
-              renewal — which is why this login is never chased and never counted as a second customer.
+              This login takes the owner’s <strong className="font-semibold text-slate-300">software,
+              shop name, plan and expiry</strong>. All four stay the owner’s — read live, so an upgrade or
+              a renewal moves this login with it, and it is never chased or counted as a second customer.
+              {pickedOwner && (
+                <>
+                  {' '}Currently <strong className="font-semibold text-slate-300">{softwareLabelOf(pickedOwner)}</strong>.
+                </>
+              )}
             </p>
           </div>
         )}
@@ -309,6 +345,56 @@ export function CreateAccountModal({
             className="sm:col-span-2"
           />
         </div>
+
+        {/*
+          ── which product ────────────────────────────────────────────────────
+          Owners only, and **required**: which edition a shop bought is a commercial fact this app
+          cannot infer, and a wrong guess surfaces months later as a support call about a feature
+          they never had. Nothing is pre-selected for the same reason.
+
+          Staff are not asked at all — they use whatever the shop uses, so the answer is the owner's
+          and asking again would invite two different answers for one shop.
+        */}
+        {!staff && (
+          <fieldset>
+            <legend className="label">
+              Software <span className="font-normal text-rose-300">· required</span>
+            </legend>
+            <div className="grid gap-1.5 sm:grid-cols-2">
+              {SOFTWARE_TYPES.map((option) => (
+                <label
+                  key={option}
+                  className={`flex cursor-pointer items-start gap-2 rounded-xl border p-2.5 transition-colors ${
+                    software === option
+                      ? 'border-sky-500 bg-sky-500/10'
+                      : fieldErrors.softwareType
+                        ? 'border-rose-500/60 hover:border-rose-400'
+                        : 'border-slate-700 hover:border-slate-500'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="softwareType"
+                    value={option}
+                    checked={software === option}
+                    onChange={() => {
+                      setSoftware(option)
+                      setFieldErrors((current) => ({ ...current, softwareType: '' }))
+                    }}
+                    className="mt-0.5 h-3.5 w-3.5 accent-sky-500"
+                  />
+                  <span className="min-w-0">
+                    <span className="block text-[13px] font-semibold text-slate-100">{SOFTWARE_LABEL[option]}</span>
+                    <span className="block text-[11.5px] text-slate-400">{SOFTWARE_NOTE[option]}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+            {fieldErrors.softwareType && (
+              <p className="mt-1 text-[12px] font-medium text-rose-400">{fieldErrors.softwareType}</p>
+            )}
+          </fieldset>
+        )}
 
         {/* Owners only. Staff are on the owner's licence — see the note in the owner block above. */}
         {!staff && (

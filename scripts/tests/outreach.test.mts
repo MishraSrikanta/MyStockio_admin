@@ -104,7 +104,12 @@ const expiring = reminderMessage(account({ days: 7 }), 'expiring')
 check('it greets the shop by name', expiring.includes('Balaji Traders'), expiring.split('\n')[0])
 check('it says how long is left', expiring.includes('7 days left'), expiring)
 check('it names the app', expiring.includes('MyStockio'))
-check('it gives the end date', /\d{2} \w{3} \d{4}/.test(expiring), expiring)
+/*
+ * Three to five letters for the month, not exactly three. `en-IN` abbreviates September as "Sept"
+ * and does not abbreviate May at all, so a three-letter assertion passes for most of the year and
+ * fails in the rest — which is exactly how it failed, on a calendar boundary rather than a change.
+ */
+check('it gives the end date', /\d{2} \w{3,5} \d{4}/.test(expiring), expiring)
 /* No amount in a reminder: prices change, and a stale figure in writing is an argument later. */
 check('it does NOT quote a price', !expiring.includes('₹'))
 

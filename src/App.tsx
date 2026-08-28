@@ -33,6 +33,8 @@ export function App() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [missingApi, setMissingApi] = useState(false)
+  /** Why the money ledger is empty, when it is empty because something failed. */
+  const [ledgerError, setLedgerError] = useState('')
 
   /** Which screen: the customer table, or the money. */
   const [view, setView] = useState<'accounts' | 'dashboard'>('accounts')
@@ -49,6 +51,7 @@ export function App() {
     setLoading(true)
     setError('')
     setMissingApi(false)
+    setLedgerError('')
     try {
       /*
        * Both halves together, and **the ledger is allowed to fail on its own**.
@@ -59,7 +62,18 @@ export function App() {
        */
       const [nextAccounts, nextPayments] = await Promise.all([
         listAccounts(),
-        listPayments().catch(() => [] as Payment[]),
+        /*
+         * The ledger may fail on its own — but **not silently**.
+         *
+         * This used to swallow the error and settle to an empty array, which meant a payments route
+         * that was missing, refusing or misbehaving produced a money screen reading ₹0 with no
+         * indication anything had gone wrong. On a screen about money, a confident zero is worse
+         * than an error: nobody investigates a number that looks like an answer.
+         */
+        listPayments().catch((caught: unknown) => {
+          setLedgerError(caught instanceof ApiError ? caught.message : (caught as Error).message)
+          return [] as Payment[]
+        }),
       ])
       setAccounts(nextAccounts)
       setPayments(nextPayments)
@@ -259,6 +273,7 @@ export function App() {
 
       {view === 'dashboard' ? (
         <Dashboard
+          ledgerError={ledgerError}
           payments={payments}
           accounts={accounts}
           loading={loading}

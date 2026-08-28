@@ -4,6 +4,14 @@ import { ApiError, deleteAccount, recordPayment, updateAccount } from '@/lib/api
 import { formatAmount, normalisePhone, reminderMessage, toneFor, whatsappLink } from '@/lib/outreach'
 import { childrenOf, isStaff, nameOf, ownerOf, ROLE_LABEL, roleOf } from '@/lib/roles'
 import {
+  SOFTWARE_LABEL,
+  SOFTWARE_NOTE,
+  SOFTWARE_TYPES,
+  SoftwareType,
+  softwareLabelOf,
+  softwareOf,
+} from '@/lib/software'
+import {
   type AdminAccount,
   describeTimeLeft,
   expiryAfterRenewal,
@@ -47,6 +55,8 @@ export function AccountDrawer({
     password: '',
   })
   const [plan, setPlan] = useState<string>(account.subscription?.plan ?? '1year')
+  /* Seeded from what they are on now, so the radios show the truth before anything is touched. */
+  const [software, setSoftware] = useState<SoftwareType>(softwareOf(account))
   const [amount, setAmount] = useState<string>(String(PLAN_PRICE[plan] ?? ''))
   const [method, setMethod] = useState<'cash' | 'upi' | 'bank' | 'card' | 'other'>('upi')
   const [reference, setReference] = useState('')
@@ -78,6 +88,12 @@ export function AccountDrawer({
         email: form.email.trim(),
         phone: form.phone.trim(),
         ...(form.password ? { password: form.password } : {}),
+        /*
+         * Sent for an owner only, and only when it changed. Staff have no edition of their own — the
+         * server refuses one — and re-sending an unchanged value would make every save look like an
+         * edition change in whatever audit trail the backend keeps.
+         */
+        ...(!staffMember && software !== softwareOf(account) ? { softwareType: software } : {}),
       })
       setForm((current) => ({ ...current, password: '' }))
       setDone(form.password ? 'Saved. The new password works immediately.' : 'Saved.')
@@ -243,6 +259,64 @@ export function AccountDrawer({
               <p className="mt-2 text-[11.5px] leading-relaxed text-slate-500">
                 All {staff.length} on this shop’s licence. Deleting this account is refused while they
                 exist — they would be left able to sign in and attached to nothing.
+              </p>
+            </>
+          )}
+        </section>
+
+        {/* ── which software they are on ─────────────────────────────────── */}
+        <section className="rounded-xl border border-white/10 bg-slate-950/30 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-[12px] font-bold uppercase tracking-wider text-slate-400">Software</h3>
+            <Badge tone={softwareOf(account) === SoftwareType.Mini ? 'warning' : 'info'}>
+              {softwareLabelOf(account)}
+            </Badge>
+          </div>
+
+          {staffMember ? (
+            /*
+             * A staff login has no edition of its own — it reads the owner's, live. Shown here rather
+             * than hidden, because "which software is this login on" is a fair question; offered as a
+             * control it would be a switch that changes nothing, or worse, one that puts the counter
+             * on a different edition from the shop.
+             */
+            <p className="mt-2 text-[12.5px] leading-relaxed text-slate-400">
+              From {owner ? <strong className="font-semibold text-slate-200">{nameOf(owner)}</strong> : 'their owner'}
+              , like the licence. To move this login to another edition, change it on the owner and every
+              login under them follows.
+            </p>
+          ) : (
+            <>
+              <div className="mt-2 grid gap-1.5 sm:grid-cols-2">
+                {SOFTWARE_TYPES.map((option) => (
+                  <label
+                    key={option}
+                    className={`flex cursor-pointer items-start gap-2 rounded-xl border p-2.5 transition-colors ${
+                      software === option ? 'border-sky-500 bg-sky-500/10' : 'border-slate-700 hover:border-slate-500'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="drawer-software"
+                      value={option}
+                      checked={software === option}
+                      onChange={() => {
+                        setSoftware(option)
+                        setDone('')
+                      }}
+                      className="mt-0.5 h-3.5 w-3.5 accent-sky-500"
+                    />
+                    <span className="min-w-0">
+                      <span className="block text-[13px] font-semibold text-slate-100">{SOFTWARE_LABEL[option]}</span>
+                      <span className="block text-[11.5px] text-slate-400">{SOFTWARE_NOTE[option]}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+              <p className="mt-1.5 text-[11.5px] leading-relaxed text-slate-500">
+                {staff.length > 0
+                  ? `Changing this moves all ${staff.length} staff login${staff.length === 1 ? '' : 's'} with it — they read this shop’s edition rather than storing their own.`
+                  : 'Saved with Save details. An account created before this field existed reads as MyStockio until it is set.'}
               </p>
             </>
           )}

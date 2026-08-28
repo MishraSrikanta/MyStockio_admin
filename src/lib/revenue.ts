@@ -51,6 +51,102 @@ export function isRefund(line: Payment): boolean {
   return line.type === 'refund'
 }
 
+/* ────────────────────────────────────────────── reading what arrived ── */
+
+/** The field names a backend might use for "when this happened". Checked in this order. */
+const WHEN_FIELDS = ['at', 'createdAt', 'paidAt', 'date', 'timestamp', 'created_at'] as const
+
+/**
+ * Turns a row from the payments route into the shape every figure here is computed from.
+ *
+ * ══ WHY THIS EXISTS ══════════════════════════════════════════════════════════════
+ *
+ * The live backend sends **`createdAt`**; this app read **`at`**. One field name apart, and the
+ * result was not a visible error but a **silent zero**: `new Date(undefined)` is an invalid date,
+ * every row fell outside every period, and a dashboard built on ₹17,000 of real payments displayed
+ * ₹0 while cheerfully claiming the ledger was empty.
+ *
+ * That is the worst shape a bug can take on a money screen — no error, no empty state, just a
+ * confident wrong number — so the fix is not "rename the field" but "stop trusting one spelling".
+ * Anything that reaches the app goes through here first, and the rest of this file can then assume
+ * one clean shape.
+ *
+ * Tolerated on purpose: `createdAt` / `paidAt` / `date` / `timestamp` for the date, `_id` for the
+ * id, a numeric **string** for the amount (JSON from a decimal column often arrives quoted), and a
+ * Mongo `{ $numberDecimal }` wrapper.
+ *
+ * **A row with no readable date is kept, not dropped.** It cannot sit in a month, but money that
+ * exists must not vanish because its timestamp was unreadable — `undatedCount` lets a screen say so
+ * out loud instead.
+ */
+export function normalisePayment(raw: unknown): Payment | null {
+  if (!raw || typeof raw !== 'object') return null
+  const row = raw as Record<string, unknown>
+
+  const id = String(row.id ?? row._id ?? '')
+  const accountId = String(
+    row.accountId ??
+      row.account ??
+      (typeof row.account === 'object' && row.account ? (row.account as Record<string, unknown>)._id : '') ??
+      '',
+  )
+
+  const amount = readAmount(row.amount)
+  if (!Number.isFinite(amount)) return null
+
+  return {
+    id: id || `${accountId}-${String(row.createdAt ?? row.at ?? '')}`,
+    accountId,
+    amount,
+    plan: row.plan === undefined || row.plan === null ? undefined : String(row.plan),
+    method: row.method === undefined || row.method === null ? undefined : String(row.method),
+    reference: row.reference === undefined || row.reference === null ? undefined : String(row.reference),
+    note: row.note === undefined || row.note === null ? undefined : String(row.note),
+    at: readWhen(row),
+    recordedBy:
+      row.recordedByEmail !== undefined && row.recordedByEmail !== null && row.recordedByEmail !== ''
+        ? String(row.recordedByEmail)
+        : row.recordedBy === undefined || row.recordedBy === null
+          ? undefined
+          : String(row.recordedBy),
+    /* Anything that is not exactly 'refund' is a payment — including a row with no type at all. */
+    type: String(row.type ?? 'payment') === 'refund' ? 'refund' : 'payment',
+  }
+}
+
+/** The first field that parses as a date, as an ISO string. `''` when there is none. */
+function readWhen(row: Record<string, unknown>): string {
+  for (const field of WHEN_FIELDS) {
+    const value = row[field]
+    if (value === undefined || value === null || value === '') continue
+    const parsed = new Date(value as string | number)
+    if (!Number.isNaN(parsed.getTime())) return parsed.toISOString()
+  }
+  return ''
+}
+
+/** A number, a numeric string, or a `{ $numberDecimal }` wrapper. `NaN` when it is none of those. */
+function readAmount(value: unknown): number {
+  if (typeof value === 'number') return value
+  if (typeof value === 'string') return Number(value)
+  if (value && typeof value === 'object') {
+    const wrapped = (value as Record<string, unknown>).$numberDecimal
+    if (typeof wrapped === 'string' || typeof wrapped === 'number') return Number(wrapped)
+  }
+  return Number.NaN
+}
+
+/**
+ * How many lines carry no readable date.
+ *
+ * They are in `totals()` — the money is real — but no monthly bucket or period can hold them, so
+ * every period-filtered figure is short by their value. A screen showing those figures has to say
+ * so; silently disagreeing with itself is how a number stops being trusted.
+ */
+export function undatedCount(lines: Payment[]): number {
+  return lines.filter((line) => !line.at).length
+}
+
 /**
  * The amount as it affects the books: negative for a refund.
  *

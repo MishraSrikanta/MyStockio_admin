@@ -44,6 +44,11 @@ export interface AdminAccount {
   shopRole?: string | null
   /** The owner this login belongs to. `null` on an owner. */
   ownerId?: string | null
+  /**
+   * Which edition they are on — `SoftwareType` in `lib/software.ts`. Absent reads as MyStockio,
+   * since every account older than the field is on it. On a staff account this is the owner's.
+   */
+  softwareType?: string | null
   /** The owner's email, as given when the login was created. Kept for display. */
   ownerEmail?: string | null
   subscription?: Subscription

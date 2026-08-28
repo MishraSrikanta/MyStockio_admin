@@ -74,8 +74,8 @@ reusing it would hand back exactly the exposure this change removed.
 - **Counters** — all / to chase / expired / expiring / active / lifetime, each one a filter. Also
   how many of the chase list have **no usable phone number**, so the gap is visible instead of the
   count quietly overstating what can be done.
-- **Create** — an owner with a plan, or a staff login (cashier, product manager, …) under an owner.
-  The server sets the dates; an expiry cannot be typed.
+- **Create** — an owner with a plan and a software edition, or a staff login (cashier, product
+  manager, …) under an owner. The server sets the dates; an expiry cannot be typed.
 - **Amend** — shop name, owner, user id (email), phone, password. A changed password works at once.
 - **Payments** — amount, plan, method and reference in one action that also renews the licence, plus
   a WhatsApp receipt.
@@ -133,6 +133,25 @@ title were read out of the field the authoriser trusts, `{"role":"superadmin"}` 
 would be a request to become an administrator. The contract test asserts that a signup naming `role`
 does not get it, that the account is then refused by `admin/login` with 403, and that
 `shopRole: "superadmin"` is a 400.
+
+### Which software: MyStockio or MyStockio Mini
+
+`SoftwareType` in `src/lib/software.ts` — `mystockio` or `mystockio_mini`.
+
+**Required on the create form for an owner, and nothing is pre-selected.** Which edition a shop
+bought is a commercial fact the app cannot infer, and a guess surfaces months later as a support call
+about a feature they never had.
+
+**Change it any time** from an owner's drawer — an upgrade from Mini, or a correction. The edition
+shows in the table under the plan (Mini in amber, since it is the exception), and the filter dropdown
+has *On MyStockio* / *On MyStockio Mini* for answering "who is on what".
+
+**Staff take the owner's**, like the shop name and the licence. They are not asked, and the server
+refuses to store one on a staff row — it would be a value nothing reads. Change it on the owner and
+every login under them follows in the same instant, because it is resolved live rather than copied.
+
+An account created before this field existed reads as **MyStockio**: Mini came later, so a missing
+value is history rather than a gap.
 
 ### The money screen
 
@@ -220,10 +239,10 @@ business in a search index.
 `src/lib/config.ts`, two constants, the same arrangement as MyStockio:
 
 ```ts
-// const PROD_BASE = "https://financegpt-backend-phm6.onrender.com/";
-// const DEV_BASE = "https://financegpt-backend-phm6.onrender.com/";
-const PROD_BASE = "http://localhost:5000/"; // a production build
-const DEV_BASE = "http://localhost:5000/"; // vite dev
+const PROD_BASE = "https://financegpt-backend-phm6.onrender.com/";
+const DEV_BASE = "https://financegpt-backend-phm6.onrender.com/";
+// const PROD_BASE = "http://localhost:5000/"; // a production build
+// const DEV_BASE = "http://localhost:5000/"; // vite dev
 ```
 
 `vite dev` uses `DEV_BASE` and a build uses `PROD_BASE`. Override either without touching the source

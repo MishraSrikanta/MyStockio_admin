@@ -28,6 +28,7 @@ import {
   type Period,
   profitFor,
   totals,
+  undatedCount,
 } from '@/lib/revenue'
 import { type AdminAccount, isLifetime, planLabel, subscriptionState } from '@/lib/subscription'
 import { ChartCard, Columns, money, RankedBars, SERIES, StackedBar, STATUS, TrendLine } from './charts'
@@ -48,12 +49,15 @@ export function Dashboard({
   payments,
   accounts,
   loading,
+  ledgerError = '',
   onOpenReport,
   onAddPayment,
 }: {
   payments: Payment[]
   accounts: AdminAccount[]
   loading: boolean
+  /** Why the ledger is empty, when it is empty because the request failed. */
+  ledgerError?: string
   onOpenReport: () => void
   onAddPayment: () => void
 }) {
@@ -69,6 +73,12 @@ export function Dashboard({
   const sum = useMemo(() => totals(lines), [lines])
   const months = useMemo(() => byMonth(lines, period), [lines, period])
   const profit = useMemo(() => profitFor(sum.net, monthsIn(period), MONTHLY_COSTS), [sum.net, period])
+  /*
+   * Rows the server sent that carry no readable date. Their money is real but no period can hold
+   * them, so every figure on this screen is short by their value — which has to be said rather than
+   * quietly absorbed.
+   */
+  const undated = useMemo(() => undatedCount(payments), [payments])
 
   /* Running total across the same buckets — the trend the monthly columns cannot show. */
   const cumulative = useMemo(() => {
@@ -130,6 +140,28 @@ export function Dashboard({
 
   return (
     <div className="space-y-3">
+      {/*
+        Two ways this screen can be wrong without looking wrong, both said out loud.
+
+        A failed ledger and an empty one produce the same ₹0, and on a money screen a confident zero
+        is worse than an error — nobody investigates a number that looks like an answer.
+      */}
+      {ledgerError && (
+        <div className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-3 py-2.5 text-[12.5px] leading-relaxed text-rose-200">
+          <strong className="font-bold">The payments could not be read, so every figure below is ₹0.</strong>{' '}
+          {ledgerError}
+        </div>
+      )}
+      {undated > 0 && (
+        <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-[12.5px] leading-relaxed text-amber-200">
+          <strong className="font-bold">
+            {undated} payment{undated === 1 ? '' : 's'} carr{undated === 1 ? 'ies' : 'y'} no readable date.
+          </strong>{' '}
+          They cannot sit in a month, so the figures below are short by their value. The server should
+          send a date on every row — <code>createdAt</code> or <code>at</code>.
+        </div>
+      )}
+
       {/* ── the filter row, above the charts ───────────────────────────────── */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap gap-1.5" role="group" aria-label="Period">

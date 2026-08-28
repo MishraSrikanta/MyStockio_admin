@@ -78,6 +78,7 @@ Returned by every endpoint here. `subscription` is what the whole console is bui
   "ownerId": null,
   "ownerEmail": null,
   "subscriptionFrom": "own",
+  "softwareType": "mystockio",
   "createdAt": "2026-08-20T06:12:44.019Z",
   "lastPaymentAt": "2026-08-20T09:30:00.000Z",
   "lastPaymentAmount": 3000,
@@ -305,6 +306,39 @@ the screen, not a choice somebody made. A name that *was* given is kept exactly 
 owner with two branches is a real thing. So a staff account ends up matching its owner on all three
 of the things it does not own: **shop name, plan and expiry.**
 
+### `softwareType` — which product a customer is on
+
+`"mystockio"` (the full product) or `"mystockio_mini"`.
+
+| Where | Rule |
+| --- | --- |
+| `POST api/v1/auth/register` | Accepted on an owner. **Absent defaults to `mystockio`**; an unrecognised value is a `400`. Ignored on staff — they read the owner's. |
+| `PATCH api/v1/admin/accounts/{id}` | Accepted on an owner, so a shop can be upgraded or corrected. **`400 NOT_AN_OWNER` on a staff account**, naming the owner to change instead. |
+| every account response | Present on every account, already resolved — an owner's own, a staff member's is their owner's. |
+
+**The console makes it mandatory on its own form; the API defaults it.** Those are deliberately
+different, and it is worth being explicit about why:
+
+- `auth/register` is the **shared public signup** MyStockio's own form posts to. Making the field
+  required at the API would reject that form's bodies the moment this ships, so absent means
+  `mystockio`.
+- That default is also simply true: every account older than this field is on the full product,
+  because Mini came later. A missing value is history, not a gap.
+- The *console* refuses to submit without a choice, because which edition a shop bought is a
+  commercial fact nobody should guess for a new customer.
+
+If you would rather have it hard-required at the API, that is a defensible call — but MyStockio's
+signup form has to send it in the same release, or signups start failing.
+
+**Stored on the owner only, resolved live for staff.** A staff login has no `softwareType` column
+value of its own; the server answers with the owner's on every read, exactly as it does for
+`subscription`. That is what makes an upgrade move the whole shop at once instead of leaving the
+counter on the old edition — and it is why setting it on a staff row is refused rather than stored
+as a value nothing reads.
+
+**On promotion**, a staff member turned owner keeps the edition they were already using. Anything
+else silently moves a working shop to a different product.
+
 ### `GET api/v1/admin/accounts` — filters
 
 Everything is still returned by default, owners and staff together, each with `shopRole` and
@@ -374,6 +408,8 @@ permissions problem is an afternoon lost to the wrong question.
 - [ ] An account with no `shopRole` behaves exactly as an owner did before roles existed
 - [ ] Staff hold no subscription of their own and read their owner's live, with `subscriptionFrom`
 - [ ] A staff signup with no `shopName` inherits the owner's; one that is given is kept as given
+- [ ] `softwareType` is stored on the owner, resolved live for staff, and refused on a staff PATCH
+- [ ] An unrecognised `softwareType` is a 400; an absent one defaults to `mystockio`
 - [ ] Staff cannot own staff; deleting or demoting an owner with staff is a 409, not a cascade
 - [ ] A payment against a staff account is a 400
 - [ ] Subscription dates computed server-side; `expiresAt` never accepted from a client

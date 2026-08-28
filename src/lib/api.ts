@@ -14,7 +14,7 @@
  */
 
 import { ADMIN_API_KEY, ADMIN_STORAGE, APIEndpoint, getApiUrl } from './config'
-import type { Payment } from './revenue'
+import { normalisePayment, type Payment } from './revenue'
 import type { AdminAccount } from './subscription'
 
 const TIMEOUT_MS = 30_000
@@ -243,6 +243,14 @@ export interface CreateAccountInput {
    */
   shopRole?: string
   /**
+   * Which edition the customer is on — a `SoftwareType` value. **Required for an owner**, since the
+   * server cannot know it and guessing puts a shop on the wrong product.
+   *
+   * Omitted for staff: they use whatever their owner uses, so the server takes it from the owner
+   * rather than letting a cashier be created on a different edition from the till beside them.
+   */
+  softwareType?: string
+  /**
    * The owner this login belongs to, **required for every role except owner**.
    *
    * An email rather than an id, because it is what a person knows and can check. The server resolves
@@ -279,6 +287,10 @@ export async function createAccount(input: CreateAccountInput): Promise<AdminAcc
       ...(input.shopRole && input.shopRole !== 'owner' ? {} : { plan: input.plan || '1year' }),
       ...(input.developerCode ? { developerCode: input.developerCode } : {}),
       ...(input.shopRole ? { shopRole: input.shopRole } : {}),
+      /* Sent for an owner only — staff take the owner's, resolved by the server. */
+      ...(input.softwareType && (!input.shopRole || input.shopRole === 'owner')
+        ? { softwareType: input.softwareType }
+        : {}),
       ...(input.ownerEmail?.trim() ? { ownerEmail: input.ownerEmail.trim().toLowerCase() } : {}),
     },
     /*
@@ -304,6 +316,13 @@ export interface UpdateAccountInput {
    * has staff of their own.
    */
   shopRole?: string
+  /**
+   * Move a customer between editions — an upgrade from Mini, or a correction.
+   *
+   * Set on the **owner**. Their staff follow automatically, because a staff account reads the
+   * owner's edition rather than storing one, so an upgrade cannot leave the counter behind.
+   */
+  softwareType?: string
   /** Move a staff member to a different owner. */
   ownerEmail?: string
 }
@@ -385,6 +404,16 @@ export async function listPayments(accountId?: string): Promise<Payment[]> {
     ? `${APIEndpoint.ADMIN_PAYMENTS}?accountId=${encodeURIComponent(accountId)}`
     : APIEndpoint.ADMIN_PAYMENTS
   const body = await request<PaymentsResponse | Payment[]>('GET', path)
-  const lines = Array.isArray(body) ? body : body.payments ?? body.data ?? []
-  return [...lines].sort((a, b) => b.at.localeCompare(a.at))
+  const rows = Array.isArray(body) ? body : body.payments ?? body.data ?? []
+
+  /*
+   * **Normalised here, once.** The live backend dates its rows `createdAt` while this app reads
+   * `at`, and that one field name was the difference between a dashboard showing ₹17,000 and the
+   * same dashboard showing ₹0 with no error at all — an invalid date puts every row outside every
+   * period. Mapping at the boundary means nothing downstream has to know which spelling arrived.
+   */
+  return rows
+    .map((row) => normalisePayment(row))
+    .filter((line): line is Payment => line !== null)
+    .sort((a, b) => b.at.localeCompare(a.at))
 }

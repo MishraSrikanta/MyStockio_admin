@@ -557,6 +557,112 @@ try {
     (await call('DELETE', `api/v1/admin/accounts/${familyOwnerId}`, { token: adminToken })).status === 200,
   )
 
+
+  /* ── which software a customer is on ──────────────────────────────────── */
+  /*
+   * The edition belongs to the owner and is read live, exactly like the licence. Staff have none of
+   * their own, so an upgrade moves the whole shop at once rather than leaving the counter behind.
+   */
+  console.log('\nsoftware type')
+
+  const mini = await call('POST', 'api/v1/auth/register', {
+    body: {
+      name: 'Mini Owner', email: 'mini@shop.com', password: 'Passw0rd!',
+      shopName: 'Mini Stores', plan: '1year', softwareType: 'mystockio_mini',
+    },
+  })
+  const miniOwnerId = mini.body?.account?.id
+  check('an owner can be created on Mini', mini.body?.account?.softwareType === 'mystockio_mini', String(mini.body?.account?.softwareType))
+
+  /*
+   * The default that keeps the shared signup route working. `auth/register` is public and MyStockio's
+   * own form uses it; refusing a body without `softwareType` would break that form on deploy. So an
+   * absent value reads as the full product — which is also the truth for every account older than
+   * the field.
+   */
+  const noType = await call('POST', 'api/v1/auth/register', {
+    body: { name: 'Plain Owner', email: 'plain@shop.com', password: 'Passw0rd!', plan: '1year' },
+  })
+  check('an omitted edition defaults to MyStockio', noType.body?.account?.softwareType === 'mystockio', String(noType.body?.account?.softwareType))
+
+  /* A near-miss must be refused rather than corrected: silently accepted, it mislabels a customer. */
+  const nearMiss = await call('POST', 'api/v1/auth/register', {
+    body: { name: 'X', email: 'nearmiss@shop.com', password: 'Passw0rd!', softwareType: 'mystockio_minii' },
+  })
+  check('an unrecognised edition is refused', nearMiss.status === 400, String(nearMiss.status))
+  check('...with per-field detail', typeof nearMiss.body?.error?.details?.softwareType === 'string', nearMiss.body?.error?.details?.softwareType)
+
+  /* ── staff take the owner's edition ─────────────────────────────────── */
+
+  const miniStaff = await call('POST', 'api/v1/auth/register', {
+    body: {
+      name: 'Mini Cashier', email: 'minitill@shop.com', password: 'Passw0rd!',
+      shopRole: 'cashier', ownerEmail: 'mini@shop.com',
+    },
+  })
+  const miniStaffId = miniStaff.body?.account?.id
+  check('a staff login reads the owner’s edition', miniStaff.body?.account?.softwareType === 'mystockio_mini', String(miniStaff.body?.account?.softwareType))
+
+  /* A staff signup naming its own edition must not get one — the shop's is the only answer. */
+  const pushy = await call('POST', 'api/v1/auth/register', {
+    body: {
+      name: 'Pushy', email: 'pushy@shop.com', password: 'Passw0rd!',
+      shopRole: 'cashier', ownerEmail: 'mini@shop.com', softwareType: 'mystockio',
+    },
+  })
+  check('a staff signup cannot pick a different edition', pushy.body?.account?.softwareType === 'mystockio_mini', String(pushy.body?.account?.softwareType))
+
+  /* ── editing it ─────────────────────────────────────────────────────── */
+
+  const upgraded = await call('PATCH', `api/v1/admin/accounts/${miniOwnerId}`, {
+    token: adminToken,
+    body: { softwareType: 'mystockio' },
+  })
+  check('an owner can be moved to another edition', upgraded.body?.account?.softwareType === 'mystockio', String(upgraded.body?.account?.softwareType))
+
+  /* The whole reason it is resolved live rather than copied: the staff must move with the shop. */
+  const staffAfter = await call('GET', `api/v1/admin/accounts/${miniStaffId}`, { token: adminToken })
+  check(
+    '...and every staff login follows without being touched',
+    staffAfter.body?.account?.softwareType === 'mystockio',
+    String(staffAfter.body?.account?.softwareType),
+  )
+
+  /* Setting it on a staff account is refused: it would be a value nothing reads. */
+  const onStaff = await call('PATCH', `api/v1/admin/accounts/${miniStaffId}`, {
+    token: adminToken,
+    body: { softwareType: 'mystockio_mini' },
+  })
+  check('setting an edition on staff is refused', onStaff.status === 400, String(onStaff.status))
+  check('...naming the owner to change instead', String(onStaff.body?.error?.message ?? '').includes('mini@shop.com'), onStaff.body?.error?.message)
+
+  const badPatch = await call('PATCH', `api/v1/admin/accounts/${miniOwnerId}`, {
+    token: adminToken,
+    body: { softwareType: 'mystockio_ultra' },
+  })
+  check('an unrecognised edition is refused on PATCH too', badPatch.status === 400, String(badPatch.status))
+
+  /* An account created before the field existed reads as the full product, not as unknown. */
+  const legacyOwner = await call('POST', 'api/v1/auth/register', {
+    body: { name: 'Legacy', email: 'legacyowner@shop.com', password: 'Passw0rd!', plan: '1year' },
+  })
+  check('a legacy-shaped account reads as MyStockio', legacyOwner.body?.account?.softwareType === 'mystockio')
+
+  /* Promotion keeps somebody on the edition they were already using. */
+  const promotedMini = await call('POST', 'api/v1/auth/register', {
+    body: { name: 'Future Owner', email: 'future@shop.com', password: 'Passw0rd!', shopRole: 'manager', ownerEmail: 'plain@shop.com' },
+  })
+  await call('PATCH', `api/v1/admin/accounts/${noType.body?.account?.id}`, { token: adminToken, body: { softwareType: 'mystockio_mini' } })
+  const nowOwner = await call('PATCH', `api/v1/admin/accounts/${promotedMini.body?.account?.id}`, {
+    token: adminToken,
+    body: { shopRole: 'owner', plan: '1year' },
+  })
+  check(
+    'promoting staff to owner keeps the edition they were on',
+    nowOwner.body?.account?.softwareType === 'mystockio_mini',
+    String(nowOwner.body?.account?.softwareType),
+  )
+
   console.log('\nerror shapes')
   const bad = await call('POST', 'api/v1/admin/login', { body: {} })
   check('errors are nested as { error: { code, message } }', typeof bad.body?.error?.message === 'string')
