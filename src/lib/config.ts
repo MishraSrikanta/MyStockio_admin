@@ -56,11 +56,11 @@ export const PROD_BASE_MYSTOCKIO = normaliseOrigin('https://financegpt-backend-p
  * its admin routes take a `module` telling them which product a request is about.
  */
 // export const PROD_BASE_MYTRANSPORT = normaliseOrigin('http://localhost:5100')
-export const PROD_BASE_MYTRANSPORT = normaliseOrigin('https://mytranspot-backend.onrender.com')
+export const PROD_BASE_MYTRANSPORT = normaliseOrigin('https://mytransport-backend.onrender.com')
 
 /** MyClinic — practices and their branches. The same host as MyTransport, today. */
 // export const PROD_BASE_MYCLINIC = normaliseOrigin('http://localhost:5100')
-export const PROD_BASE_MYCLINIC = normaliseOrigin('https://mytranspot-backend.onrender.com')
+export const PROD_BASE_MYCLINIC = normaliseOrigin('https://mytransport-backend.onrender.com')
 
 /**
  * The shared secret MyTransport's and MyClinic's admin API checks, sent as
