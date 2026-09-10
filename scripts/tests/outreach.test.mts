@@ -122,11 +122,13 @@ check('...and asks a question rather than demanding', expired.includes('?'))
 const receipt = reminderMessage(account({ days: 365 }), 'receipt', { amount: 3000 })
 check('a receipt thanks them', receipt.toLowerCase().includes('thank you'))
 check('...and states the amount', receipt.includes('3,000'), receipt)
-check('...and the new expiry', /\d{2} \w{3} \d{4}/.test(receipt))
+check('...and the new expiry', /\d{2} \w{3,5} \d{4}/.test(receipt))
 
 const lifetimeReceipt = reminderMessage(account({ days: null }), 'receipt', { amount: 12000 })
 check('a lifetime receipt says it never expires', lifetimeReceipt.includes('lifetime'), lifetimeReceipt)
-check('...and quotes no expiry date', !/\d{2} \w{3} \d{4}/.test(lifetimeReceipt))
+/* `{3,5}` here too — a four-letter month like "Sept" slipping through would make
+ * this negative assertion pass for the wrong reason. */
+check('...and quotes no expiry date', !/\d{2} \w{3,5} \d{4}/.test(lifetimeReceipt))
 
 const withContact = reminderMessage(account({ days: 5 }), 'expiring', { contact: '+91 90000 00000' })
 check('a contact number is appended when given', withContact.includes('+91 90000 00000'))

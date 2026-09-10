@@ -5,6 +5,7 @@ import { AccountsTable } from './components/AccountsTable'
 import { CreateAccountModal } from './components/CreateAccountModal'
 import { Dashboard } from './components/Dashboard'
 import { PaymentModal } from './components/PaymentModal'
+import { PlatformConsole } from './components/PlatformConsole'
 import { RevenueReport } from './components/RevenueReport'
 import { LoginScreen } from './components/LoginScreen'
 import { Button, Input, Notice, Stat } from './components/ui'
@@ -13,6 +14,7 @@ import { ApiError, closeSession, isMissingAdminApi, listAccounts, listPayments }
 import { ADMIN_STORAGE } from './lib/config'
 import { normalisePhone } from './lib/outreach'
 import type { Payment } from './lib/revenue'
+import { PRODUCTS, ProductId, productById } from './lib/products'
 import type { AdminAccount } from './lib/subscription'
 
 export function App() {
@@ -35,6 +37,38 @@ export function App() {
   const [missingApi, setMissingApi] = useState(false)
   /** Why the money ledger is empty, when it is empty because something failed. */
   const [ledgerError, setLedgerError] = useState('')
+
+  /*
+   * Which product is being administered.
+   *
+   * Remembered, because somebody who runs MyTransport all morning should not
+   * re-pick it after every refresh — and kept in sessionStorage beside the rest
+   * of the session rather than localStorage, so a shared machine does not hand
+   * the next person somebody else's starting screen.
+   */
+  const [productId, setProductId] = useState<string>(() => {
+    try {
+      return sessionStorage.getItem('mystockio.admin.product') ?? ProductId.MyStockio
+    } catch {
+      return ProductId.MyStockio
+    }
+  })
+  const product = productById(productId)
+  /*
+   * Named once rather than repeated as an id comparison at each use. Everything
+   * guarded by it is a screen or an action built on MyStockio's own backend —
+   * the ledger, the shop signup form, the chase counts — none of which the other
+   * two products have anything behind.
+   */
+  const isStockio = product.id === ProductId.MyStockio
+  const chooseProduct = useCallback((id: string) => {
+    setProductId(id)
+    try {
+      sessionStorage.setItem('mystockio.admin.product', id)
+    } catch {
+      /* private browsing — the choice lasts for this view only */
+    }
+  }, [])
 
   /** Which screen: the customer table, or the money. */
   const [view, setView] = useState<'accounts' | 'dashboard'>('accounts')
@@ -178,6 +212,33 @@ export function App() {
         you on the login screen, which has two fields and nothing to re-render.
       */}
 
+      {/*
+        ── the product switcher ────────────────────────────────────────────────
+        First thing in the header, because it changes more than a filter does: a
+        different server, a different word for "customer", a different set of job
+        titles, and whether the money screens exist at all. Somewhere less
+        prominent and it becomes possible to create a login on the wrong product.
+      */}
+      <div className="mb-3 flex flex-wrap items-center gap-1.5" role="group" aria-label="Product">
+        {PRODUCTS.map((option) => (
+          <button
+            key={option.id}
+            type="button"
+            onClick={() => chooseProduct(option.id)}
+            aria-pressed={option.id === product.id}
+            title={option.note}
+            className={`rounded-xl border px-3 py-1.5 text-[12.5px] font-semibold transition-colors ${
+              option.id === product.id
+                ? 'border-sky-400/50 bg-sky-500/15 text-sky-200'
+                : 'border-white/10 text-slate-300 hover:border-white/20 hover:text-slate-100'
+            }`}
+          >
+            {option.label}
+          </button>
+        ))}
+        <span className="ml-1 text-[11.5px] text-slate-500">{product.note}</span>
+      </div>
+
       <header className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-3">
           <img src={logoUrl} alt="" className="h-10 w-10 shrink-0 rounded-xl object-cover ring-1 ring-white/10" />
@@ -188,7 +249,7 @@ export function App() {
               {who && <span className="text-[12px] font-medium text-slate-500">· {who}</span>}
             </h1>
           <p className="text-[12.5px] text-slate-400">
-            {summary.total} owner{summary.total === 1 ? '' : 's'}
+            {!isStockio ? `Administering ${product.label}` : <>{summary.total} owner{summary.total === 1 ? '' : 's'}
             {summary.staff > 0 && ` · ${summary.staff} staff login${summary.staff === 1 ? '' : 's'}`} ·{' '}
             {summary.needsRenewal > 0 ? (
               <span className="font-semibold text-amber-300">{summary.needsRenewal} to chase</span>
@@ -198,16 +259,21 @@ export function App() {
             {summary.unreachable > 0 && (
               <span className="text-rose-300"> · {summary.unreachable} with no usable phone number</span>
             )}
+            </>}
             </p>
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
-          {/* The two screens. A tab rather than a route: there is no deep link worth keeping. */}
+          {/* The two screens. A tab rather than a route: there is no deep link worth keeping.
+              Only MyStockio has two — the other products render one screen, and a
+              tab group with a single tab is furniture. */}
+          {isStockio && (
           <div className="flex overflow-hidden rounded-xl border border-white/10" role="group" aria-label="View">
             {(
               [
                 { id: 'accounts' as const, label: 'Accounts' },
-                { id: 'dashboard' as const, label: 'Money' },
+                /* Only where a ledger exists — see Product.hasPayments. */
+                ...(product.hasPayments ? [{ id: 'dashboard' as const, label: 'Money' }] : []),
               ]
             ).map((tab) => (
               <button
@@ -223,13 +289,29 @@ export function App() {
               </button>
             ))}
           </div>
+          )}
           <Button onClick={() => void refresh()} loading={loading}>
             Refresh
           </Button>
-          <Button onClick={() => setPaying(true)}>Add payment</Button>
-          <Button variant="primary" onClick={() => setCreating(true)}>
-            New account
-          </Button>
+          {/*
+            Both of these are MyStockio's, and neither degrades gracefully.
+
+            "Add payment" writes to a ledger MyTransport and MyClinic do not have.
+            "New account" opens the shop form — subscription plan, software
+            edition, the lot — and a haulage company has none of those fields;
+            worse, its sub-logins belong to a specific customer, which that form
+            has no way to ask for. On those products a login is created from the
+            customer's own row in the console below, where the customer is
+            already known.
+          */}
+          {isStockio && (
+            <>
+              <Button onClick={() => setPaying(true)}>Add payment</Button>
+              <Button variant="primary" onClick={() => setCreating(true)}>
+                New account
+              </Button>
+            </>
+          )}
           <a href={OFFICIAL_SITE_URL} target="_blank" rel="noreferrer">
             <Button variant="outline" type="button" title="Open the public MyStockio site">
               Official site ↗
@@ -252,7 +334,7 @@ export function App() {
         </div>
       </header>
 
-      {missingApi && (
+      {isStockio && missingApi && (
         <div className="mb-3">
           <Notice tone="warning">
             <strong className="font-bold">This backend has no admin API yet.</strong> Creating an
@@ -271,7 +353,17 @@ export function App() {
         </div>
       )}
 
-      {view === 'dashboard' ? (
+      {/*
+        MyStockio keeps the screens it has; the other products get their own.
+
+        Not a shared table with columns blanked out: a shop has a subscription, an
+        expiry, a chase list and a ledger, and a haulage company on this backend has
+        none of those. Five columns permanently reading "—" would be a worse answer
+        than a screen shaped like the data behind it.
+      */}
+      {!isStockio ? (
+        <PlatformConsole product={product} />
+      ) : view === 'dashboard' ? (
         <Dashboard
           ledgerError={ledgerError}
           payments={payments}

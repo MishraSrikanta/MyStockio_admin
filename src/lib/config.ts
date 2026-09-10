@@ -6,14 +6,98 @@
  * accident. Change a constant and rebuild.
  */
 
-/** Deployed backend. This is what a production build uses. */
-// /** Local backend, used by `vite dev`. */
-// const PROD_BASE = 'http://localhost:5000/'
-// const DEV_BASE = 'http://localhost:5000/'
+/*
+ * ══ ONE BASE URL PER PRODUCT ═══════════════════════════════════════════════════
+ *
+ * This console administers three products across two backends, so there is a
+ * constant per product rather than one `PROD_BASE`. They are separate even where
+ * two currently point at the same host — MyTransport and MyClinic are one
+ * deployment today, and the day either moves should be a one-line change here
+ * rather than an afternoon working out which screens were pointed where.
+ *
+ * Each is a **scheme and host only**. The clients append their own paths, which
+ * is why `normaliseOrigin` strips a trailing slash and a trailing `/api/v1`: both
+ * are the natural thing to paste, and both produce a dead deployment that looks
+ * fine on localhost.
+ *
+ * `''` means **same origin** — the API served under the console's own domain.
+ * That is the best production shape when it is available: nothing cross-origin
+ * and no CORS list to keep.
+ */
 
+/**
+ * Corrects the three mistakes a pasted URL usually carries, rather than throwing.
+ *
+ * A throw here would be reported by whichever bundler imported the file, with a
+ * stack trace pointing at the tooling instead of at the typo — so it warns and
+ * fixes, which is the behaviour a config file wants.
+ */
+export function normaliseOrigin(value: string): string {
+  const raw = String(value ?? '').trim()
+  if (!raw) return '' /* same origin, a valid choice */
 
-const PROD_BASE = "https://financegpt-backend-phm6.onrender.com/";
-const DEV_BASE = "https://financegpt-backend-phm6.onrender.com/";
+  let out = raw.replace(/\/+$/, '') /* a trailing slash becomes //api/v1 on some hosts */
+  const suffix = out.match(/\/api(\/v\d+)?$/)
+  if (suffix) out = out.slice(0, -suffix[0].length) /* the clients append their own path */
+
+  if (out && !/^https?:\/\//.test(out)) {
+    console.warn(`[config] "${value}" has no scheme and will be read as a relative path.`)
+  }
+  return out
+}
+
+/** MyStockio — shops, licences, payments. Its own deployment. */
+export const PROD_BASE_MYSTOCKIO = normaliseOrigin('https://financegpt-backend-phm6.onrender.com')
+
+/**
+ * MyTransport — haulage companies.
+ *
+ * Shares a deployment with MyClinic ("MyTransport + MyClinic API"), which is why
+ * its admin routes take a `module` telling them which product a request is about.
+ */
+// export const PROD_BASE_MYTRANSPORT = normaliseOrigin('http://localhost:5100')
+export const PROD_BASE_MYTRANSPORT = normaliseOrigin('https://mytranspot-backend.onrender.com')
+
+/** MyClinic — practices and their branches. The same host as MyTransport, today. */
+// export const PROD_BASE_MYCLINIC = normaliseOrigin('http://localhost:5100')
+export const PROD_BASE_MYCLINIC = normaliseOrigin('https://mytranspot-backend.onrender.com')
+
+/**
+ * The shared secret MyTransport's and MyClinic's admin API checks, sent as
+ * `x-admin-secret`.
+ *
+ * That backend's admin surface has no accounts behind it — it is the vendor's own
+ * door, not a person's — so a secret is what it takes rather than a login. It
+ * must match `ADMIN_SECRET` in that deployment's environment, and **that
+ * deployment does not mount the admin routes at all while the variable is
+ * unset**, so an empty value here and a missing one there produce the same 404.
+ *
+ * **It is deliberately the same string as the MyStockio administrator's
+ * password** (`ADMIN_PASSWORD` in that backend, defaulted in its
+ * `routes/admin.js`), so there is one credential to remember across all three
+ * products rather than three.
+ *
+ * That choice has a consequence worth being clear about, because it is not
+ * obvious from the line below. Unlike a password, which is typed into a form and
+ * never leaves the browser, this value is **compiled into the bundle** — it is
+ * in the JavaScript any visitor can download. So anyone who can load this page
+ * can read it, and what they read is not merely the key to MyTransport's and
+ * MyClinic's admin API: it is also the password that signs them into MyStockio's
+ * console as the administrator. The two are now one credential, and one leak
+ * costs all three products.
+ *
+ * That is an acceptable trade for a console that is never deployed publicly, and
+ * it is the arrangement asked for. What it needs in exchange is discipline about
+ * where this is hosted: keep the deployment behind auth or on a private host, and
+ * when it is time to rotate, rotate **both** — `ADMIN_SECRET` on the
+ * MyTransport/MyClinic deployment and `ADMIN_PASSWORD` on MyStockio's — or the
+ * two drift apart and half the console starts failing for no visible reason.
+ */
+export const PLATFORM_ADMIN_SECRET = 'Srikanta@123'
+
+/* Kept for the MyStockio client, which reads these two directly. */
+const PROD_BASE = `${PROD_BASE_MYSTOCKIO}/`
+const DEV_BASE = `${PROD_BASE_MYSTOCKIO}/`
 
 /**
  * Resolves the environment:
